@@ -4,7 +4,7 @@ Two equivalent definitions are provided, both returning torque per unit axial
 depth [N.m / m] (multiply by stack length for the physical torque):
 
 * :func:`lorentz_torque` -- integrate the magnetisation-current Lorentz force
-  ``f = curl(M)_z x B`` over the rotor (``r < R_split``).  For a rigid rotor the
+  ``f = curl(M)_z x B`` over the rotor.  For a rigid rotor the
   self-torque cancels, so this gives the rotor-stator interaction directly.
 
 * :func:`maxwell_torque` -- integrate the vacuum Maxwell stress tensor over a
@@ -30,7 +30,7 @@ def lorentz_torque(Bx: jnp.ndarray, By: jnp.ndarray,
 
     The force density on the permanent magnet is ``f = Jm x B`` with the
     equivalent magnetisation current ``Jm = (0, 0, curl(M)_z)``.  The torque
-    about the axis on the rotor (``r < R_split``) is therefore
+    about the axis on the rotor is therefore
 
         tau = int_{rotor} curl(M)_z * (x Bx + y By) dA .
 

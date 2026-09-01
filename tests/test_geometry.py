@@ -11,6 +11,7 @@ from organic_motor.geometry.sdf import (
     domain_masks,
     meshgrid,
     rotate_rotor,
+    rotate_rotor_vector,
     torque_circle,
 )
 
@@ -74,3 +75,23 @@ def test_rotate_rotor_leaves_outer_stator(cfg):
     # outside the rotating rotor region the field is untouched
     assert np.allclose(np.asarray(out)[np.asarray(stator)],
                        np.asarray(field)[np.asarray(stator)], atol=1e-4)
+
+
+def test_vector_rotation_rotates_components(cfg):
+    """A rotor-fixed +x vector becomes +y after a quarter turn."""
+    m = domain_masks(cfg)
+    fx = m["rotor_design"].astype(float)
+    fy = np.zeros_like(fx)
+    ox, oy = rotate_rotor_vector(fx, fy, np.pi / 2, cfg)
+    rotor = np.asarray(m["rotor_design"])
+    # Ignore the interpolated material boundary.
+    interior = rotor & np.roll(rotor, 1, 0) & np.roll(rotor, -1, 0)
+    assert np.max(np.abs(np.asarray(ox)[interior])) < 2e-4
+    assert np.mean(np.asarray(oy)[interior]) > 0.95
+
+
+def test_real_airgap_separates_rotor_and_stator(cfg):
+    m = domain_masks(cfg)
+    assert not np.any(np.asarray(m["rotor"]) & np.asarray(m["stator"]))
+    assert np.any(np.asarray(m["airgap"]))
+    assert np.all(~np.asarray(m["design"])[np.asarray(m["airgap"])])

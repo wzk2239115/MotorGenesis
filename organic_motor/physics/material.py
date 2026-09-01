@@ -30,6 +30,7 @@ def magnetization(rho_pm: jnp.ndarray, theta: jnp.ndarray,
 
 
 def mass_density(rho_iron: jnp.ndarray, rho_pm: jnp.ndarray,
-                 cfg: MotorConfig) -> jnp.ndarray:
+                 cfg: MotorConfig, rho_copper: jnp.ndarray | None = None) -> jnp.ndarray:
     """Volumetric mass density field [kg/m^3] (air contributes zero)."""
-    return cfg.rho_iron_kg * rho_iron + cfg.rho_pm_kg * rho_pm
+    copper = 0.0 if rho_copper is None else cfg.rho_copper_kg * rho_copper
+    return cfg.rho_iron_kg * rho_iron + cfg.rho_pm_kg * rho_pm + copper

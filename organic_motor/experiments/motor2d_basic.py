@@ -30,8 +30,8 @@ def main(cfg: MotorConfig) -> None:
     out.mkdir(parents=True, exist_ok=True)
     cfg.out_dir = str(out)
 
-    print(f"[motor2d_basic] grid {cfg.N}x{cfg.N}, design annulus "
-          f"{cfg.R_gap}..{cfg.R_design} m, {cfg.steps} steps")
+    print(f"[motor2d_basic] grid {cfg.N}x{cfg.N}, rotor < {cfg.R_rotor_outer} m, "
+          f"air gap {cfg.R_rotor_outer}..{cfg.R_stator_inner} m, {cfg.steps} steps")
 
     loss = make_static_loss(cfg)
     result = optimize(cfg, loss, jax.random.PRNGKey(cfg.seed),
@@ -43,7 +43,8 @@ def main(cfg: MotorConfig) -> None:
                    temperature=cfg.sm_temp_final)
     jnp.savez(out / "final_design.npz",
               z=result.z, theta=result.theta,
-              rho_iron=mat.rho_iron, rho_pm=mat.rho_pm, nu=mat.nu,
+              rho_iron=mat.rho_iron, rho_copper=mat.rho_copper,
+              rho_pm=mat.rho_pm, nu=mat.nu,
               Mx=mat.Mx, My=mat.My)
 
     # --- STL export ---
@@ -51,6 +52,11 @@ def main(cfg: MotorConfig) -> None:
     from organic_motor.geometry.voxel import densities_to_voxels
     vol = densities_to_voxels(mat.rho_iron, mat.rho_pm, cfg, thickness=0.02)
     export_all(vol, str(out / "iron.stl"), str(out / "pm.stl"))
+
+    if cfg.generate_growth_report:
+        from organic_motor.visualization.growth_report import generate_growth_report
+        generate_growth_report(out / "checkpoints", out / "growth_report",
+                               cfg.growth_report_max_frames)
 
     print(f"[motor2d_basic] done. outputs in {out}")
     print(f"  final |torque|       : {result.history['|torque|'][-1]:.4f} N.m/m")

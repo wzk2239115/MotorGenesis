@@ -23,7 +23,7 @@ def cfg():
 
 def test_random_init_shapes(cfg):
     z, theta = random_init(cfg, jax.random.PRNGKey(0))
-    assert z.shape == (3, cfg.N, cfg.N)
+    assert z.shape == (4, cfg.N, cfg.N)
     assert theta.shape == (cfg.N, cfg.N)
 
 
@@ -34,6 +34,7 @@ def test_assemble_sum_and_support(cfg):
     assert isinstance(m, MaterialFields)
 
     rho = np.stack([np.asarray(m.rho_air), np.asarray(m.rho_iron),
+                    np.asarray(m.rho_copper),
                     np.asarray(m.rho_pm)])
     assert np.allclose(rho.sum(axis=0), 1.0, atol=1e-3)
 
@@ -45,7 +46,7 @@ def test_assemble_sum_and_support(cfg):
 
 
 def test_softmax_sums_to_one(cfg):
-    z = jax.random.normal(jax.random.PRNGKey(2), (3, cfg.N, cfg.N))
+    z = jax.random.normal(jax.random.PRNGKey(2), (4, cfg.N, cfg.N))
     rho = jax.nn.softmax(z / cfg.sm_temp_init, axis=0)
     assert np.allclose(np.asarray(rho.sum(axis=0)), 1.0, atol=1e-5)
 
@@ -55,7 +56,7 @@ def test_material_label_consistent(cfg):
     m = assemble(z, theta, cfg)
     lab = material_label(m.rho_iron, m.rho_pm)
     assert lab.shape == (cfg.N, cfg.N)
-    assert set(np.unique(np.asarray(lab)).tolist()) <= {0, 1, 2}
+    assert set(np.unique(np.asarray(lab)).tolist()) <= {0, 1, 2, 3}
 
 
 def test_gradient_flows_to_design(cfg):

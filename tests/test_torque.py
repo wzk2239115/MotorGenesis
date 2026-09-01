@@ -48,7 +48,7 @@ def test_stress_torque_zero_for_external_source(cfg):
     Mx = _blob(X, Y, 0.03, 0.03) * cfg.M_sat
     Bx, By = _solve(cfg, Mx, np.zeros_like(Mx))
     # evaluation circle R_torque=0.012 encloses no source
-    tau = float(maxwell_torque(Bx, By, cfg))
+    tau = float(maxwell_torque(Bx, By, cfg, radius=0.012))
     assert abs(tau) < 1e-2
 
 

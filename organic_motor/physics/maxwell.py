@@ -77,8 +77,23 @@ def magnetostatic_solve(nu: jnp.ndarray, Mx: jnp.ndarray, My: jnp.ndarray,
     b = jnp.where(boundary, 0.0, src)
     diag = jnp.where(boundary, 1.0, diffusion_diagonal(nu, cfg))
     x0 = jnp.zeros_like(b)
-    az = cg_fixed(A, b, x0, jacobi_preconditioner(diag), cfg.maxwell_maxiter)
+    az = cg_fixed(A, b, x0, jacobi_preconditioner(diag),
+                  cfg.maxwell_maxiter, cfg.maxwell_tol)
     return az
+
+
+def magnetostatic_relative_residual(nu, Mx, My, Jz, az,
+                                    cfg: MotorConfig) -> jnp.ndarray:
+    """Return the relative residual of a computed magnetostatic solution."""
+    from organic_motor.physics.linear import relative_residual
+    boundary = _boundary_mask(cfg)
+    src = curl_magnetization(Mx, My, cfg) + Jz
+    b = jnp.where(boundary, 0.0, src)
+
+    def operator(u):
+        return jnp.where(boundary, u, diffusion(nu, u, cfg))
+
+    return relative_residual(operator, az, b)
 
 
 def flux_density(az: jnp.ndarray, cfg: MotorConfig):

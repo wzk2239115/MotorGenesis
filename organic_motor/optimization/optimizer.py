@@ -46,7 +46,11 @@ def optimize(cfg: MotorConfig, loss_fn, key, snapshot_fn=None,
     history: dict[str, list] = {k: [] for k in
                                 ["obj", "torque", "|torque|", "ripple",
                                  "torque/mass", "mass_kg_per_m", "vol_pm",
-                                 "vol_iron", "tv"]}
+                                 "vol_iron", "vol_copper", "tv",
+                                 "copper_loss_W_per_m", "iron_loss_W_per_m",
+                                 "loss_W_per_m", "temperature_max_C",
+                                 "efficiency_proxy", "saturation",
+                                 "maxwell_residual", "thermal_residual"]}
 
     def step(params, opt_state, temperature):
         (obj, comps), grads = jax.value_and_grad(
@@ -57,6 +61,10 @@ def optimize(cfg: MotorConfig, loss_fn, key, snapshot_fn=None,
 
     plotter = _Plotter(cfg) if plot_every else None
     snapshot_fn = snapshot_fn or _snapshot_for(loss_fn)
+    recorder = None
+    if cfg.out_dir and cfg.checkpoint_every > 0:
+        from organic_motor.visualization.checkpoints import CheckpointWriter
+        recorder = CheckpointWriter(cfg.out_dir, cfg)
 
     for i in range(cfg.steps):
         temperature = temperature_schedule(i, cfg.steps, cfg)
@@ -77,10 +85,17 @@ def optimize(cfg: MotorConfig, loss_fn, key, snapshot_fn=None,
         if i > 0 and (i % cfg.pen_growth_every == 0):
             cfg.w_pm *= cfg.pen_growth
             cfg.w_iron *= cfg.pen_growth
+            cfg.w_copper *= cfg.pen_growth
 
-        if plotter is not None and (i % plot_every == 0 or i == cfg.steps - 1):
+        plot_due = plotter is not None and (i % plot_every == 0 or i == cfg.steps - 1)
+        record_due = (recorder is not None and
+                      (i % cfg.checkpoint_every == 0 or i == cfg.steps - 1))
+        if plot_due or record_due:
             fr = snapshot_fn(*params, temperature)
+        if plot_due:
             plotter.render(i, fr, history)
+        if record_due:
+            recorder.write(i, temperature, fr, history)
 
     return OptimizationResult(z=params[0], theta=params[1],
                               history=history, config=cfg)

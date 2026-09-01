@@ -41,7 +41,8 @@ def main(cfg: MotorConfig, K: int) -> None:
     mat = assemble(result.z, result.theta, cfg, temperature=cfg.sm_temp_final)
     jnp.savez(out / "final_design.npz",
               z=result.z, theta=result.theta,
-              rho_iron=mat.rho_iron, rho_pm=mat.rho_pm,
+              rho_iron=mat.rho_iron, rho_copper=mat.rho_copper,
+              rho_pm=mat.rho_pm,
               Mx=mat.Mx, My=mat.My)
 
     from organic_motor.geometry.export import export_all
@@ -49,9 +50,14 @@ def main(cfg: MotorConfig, K: int) -> None:
     vol = densities_to_voxels(mat.rho_iron, mat.rho_pm, cfg, thickness=0.02)
     export_all(vol, str(out / "iron.stl"), str(out / "pm.stl"))
 
+    if cfg.generate_growth_report:
+        from organic_motor.visualization.growth_report import generate_growth_report
+        generate_growth_report(out / "checkpoints", out / "growth_report",
+                               cfg.growth_report_max_frames)
+
     print(f"[motor2d_ripple] done. outputs in {out}")
     print(f"  final mean |torque| : {result.history['|torque|'][-1]:.4f} N.m/m")
-    print(f"  final ripple        : {result.history['ripple'][-1]:.4f} N.m/m")
+    print(f"  final relative ripple: {result.history['ripple'][-1]:.4f}")
     print(f"  PM volume fraction  : {result.history['vol_pm'][-1]:.3f}")
 
 

@@ -36,7 +36,7 @@ def helmholtz_filter(field: jnp.ndarray, cfg: MotorConfig) -> jnp.ndarray:
 
     diag = 1.0 + (r ** 2) * diffusion_diagonal(ones, cfg)
     return cg_fixed(L, field, jnp.zeros_like(field),
-                    jacobi_preconditioner(diag), 40)
+                    jacobi_preconditioner(diag), 80, cfg.filter_tol)
 
 
 def gaussian_filter(field: jnp.ndarray, cfg: MotorConfig) -> jnp.ndarray:

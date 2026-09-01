@@ -51,20 +51,24 @@ def domain_masks(cfg: MotorConfig):
 
     Returns a dict with keys:
       shaft    : r < R_shaft           (fixed air)
-      airgap   : R_shaft <= r < R_gap  (fixed air)
-      design   : R_gap  <= r < R_design(free design domain)
+      rotor_design: R_shaft <= r < R_rotor_outer
+      airgap   : R_rotor_outer <= r < R_stator_inner
+      stator_design: R_stator_inner <= r < R_design
       outer    : r >= R_design         (fixed air)
-      rotor    : r < R_split           (rotates in ripple experiment)
-      stator   : R_split <= r          (fixed in ripple experiment)
+      rotor    : r < R_rotor_outer     (rotates in ripple experiment)
+      stator   : R_stator_inner <= r   (fixed in ripple experiment)
       boundary : outer square edge (Dirichlet nodes)
     """
     X, Y, R = meshgrid(cfg)
     shaft = R < cfg.R_shaft
-    airgap = (R >= cfg.R_shaft) & (R < cfg.R_gap)
-    design = (R >= cfg.R_gap) & (R < cfg.R_design)
+    rotor_design = (R >= cfg.R_shaft) & (R < cfg.R_rotor_outer)
+    airgap = (R >= cfg.R_rotor_outer) & (R < cfg.R_stator_inner)
+    stator_design = (R >= cfg.R_stator_inner) & (R < cfg.R_design)
+    design = rotor_design | stator_design
     outer = R >= cfg.R_design
-    rotor = R < cfg.R_split
-    stator = R >= cfg.R_split
+    rotor = R < cfg.R_rotor_outer
+    stator = R >= cfg.R_stator_inner
+    winding = ((R >= cfg.R_winding_inner) & (R < cfg.R_winding_outer))
 
     # Dirichlet boundary: the outer square edges of the node grid
     boundary = jnp.zeros_like(R, dtype=bool)
@@ -76,10 +80,13 @@ def domain_masks(cfg: MotorConfig):
     return {
         "shaft": shaft,
         "airgap": airgap,
+        "rotor_design": rotor_design,
+        "stator_design": stator_design,
         "design": design,
         "outer": outer,
         "rotor": rotor,
         "stator": stator,
+        "winding": winding,
         "boundary": boundary,
     }
 
@@ -149,9 +156,26 @@ def rotate_field(field: jnp.ndarray, theta: float, cfg: MotorConfig) -> jnp.ndar
 def rotate_rotor(field: jnp.ndarray, theta: float, cfg: MotorConfig) -> jnp.ndarray:
     """Rotate the *rotor* part of ``field`` by ``theta``; stator stays fixed.
 
-    The shaft and air-gap regions are air, so rotating them is a no-op; only the
-    inner design band (``R_gap..R_split``) actually moves.
+    The shaft is fixed air and the interpolation is blended only inside the
+    moving rotor boundary.  The mechanical air gap remains source-free.
     """
     rotor = domain_masks(cfg)["rotor"].astype(field.dtype)
     rotated = rotate_field(field, theta, cfg)
     return rotor * rotated + (1.0 - rotor) * field
+
+
+def rotate_rotor_vector(fx: jnp.ndarray, fy: jnp.ndarray, theta: float,
+                        cfg: MotorConfig):
+    """Rigidly rotate a rotor-bound in-plane vector field.
+
+    Rotation requires both spatial advection and rotation of vector components;
+    treating the components as independent scalar images is physically wrong.
+    """
+    rotor = domain_masks(cfg)["rotor"].astype(fx.dtype)
+    c, s = jnp.cos(theta), jnp.sin(theta)
+    fx_adv = rotate_field(fx, theta, cfg)
+    fy_adv = rotate_field(fy, theta, cfg)
+    fx_rot = c * fx_adv - s * fy_adv
+    fy_rot = s * fx_adv + c * fy_adv
+    return (rotor * fx_rot + (1.0 - rotor) * fx,
+            rotor * fy_rot + (1.0 - rotor) * fy)
