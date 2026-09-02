@@ -16,8 +16,8 @@ class MotorConfig3D(MotorConfig):
     spacing is ``box_size / (shape - 1)`` and may be anisotropic.
     """
 
-    shape: tuple[int, int, int] = (48, 48, 32)
-    box_size: tuple[float, float, float] = (0.120, 0.120, 0.070)
+    shape: tuple[int, int, int] = (56, 56, 36)
+    box_size: tuple[float, float, float] = (0.140, 0.140, 0.100)
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     # A wider coarse-grid gap than the converged 2-D benchmark keeps the
     # mechanical separation representable at the default 48^2 cross-section.

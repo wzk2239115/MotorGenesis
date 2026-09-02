@@ -278,7 +278,7 @@ class FieldDrivenStatorYoke:
 
     cfg: MotorConfig3D
     slots: int = 12
-    slot_opening: float = 0.0028
+    slot_opening: float = 0.005
     min_yoke_thickness: float = 0.006
     max_yoke_thickness: float = 0.018
     angular_slices: int = 48
@@ -323,7 +323,7 @@ class FieldDrivenStatorYoke:
 
         pitch = 2.0 * np.pi / self.slots
         slot_r0 = cfg.R_stator_inner
-        slot_r1 = cfg.R_winding_inner + 0.5 * (cfg.R_winding_outer - cfg.R_winding_inner)
+        slot_r1 = cfg.R_winding_outer
         for s in range(self.slots):
             centre = s * pitch
             span = self.slot_opening / max(cfg.R_stator_inner, 1e-6)
@@ -374,7 +374,7 @@ class Winding3D:
     n_slots: int = 12
     coil_span: int = 3
     n_layers: int = 2
-    conductor_radial: float = 0.004
+    wire_radius: float = 0.0025
     end_turn_rise: float = 0.003
     end_turn_gap: float = 0.001
 
@@ -387,28 +387,10 @@ class Winding3D:
         r_wi = cfg.R_winding_inner
         r_wo = cfg.R_winding_outer
         slot_pitch = 2.0 * np.pi / self.n_slots
-        cond_half = self.conductor_radial * 0.5
+        wr = self.wire_radius
 
         X, Y, Z, r, theta = _angles_of(cfg)
         copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
-
-        slot_width = slot_pitch * 0.72
-
-        for slot in range(self.n_slots):
-            theta_slot = slot * slot_pitch
-            d_theta = np.mod(theta - theta_slot + np.pi, 2 * np.pi) - np.pi
-            in_slot = np.abs(d_theta) < slot_width * 0.5
-
-            for layer in range(self.n_layers):
-                r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
-                radial_dist = np.abs(r - r_mid) - cond_half
-                angular_dist = r_mid * (np.abs(d_theta) - slot_width * 0.5)
-                angular_dist = np.maximum(angular_dist, 0.0)
-                seg_dist = np.sqrt(radial_dist ** 2 + angular_dist ** 2)
-                axial = np.abs(Z - cz) - hz
-                axial_clamped = np.maximum(axial, 0.0)
-                dist = np.sqrt(seg_dist ** 2 + axial_clamped ** 2)
-                copper_sdf = np.minimum(copper_sdf, dist - cond_half * 0.5)
 
         for coil in range(self.n_slots):
             slot_a = coil
@@ -416,22 +398,34 @@ class Winding3D:
             theta_a = slot_a * slot_pitch
             theta_b = slot_b * slot_pitch
 
+            d_ab = np.mod(theta_b - theta_a + np.pi, 2 * np.pi) - np.pi
+            mid = theta_a + d_ab * 0.5
+            half_span = abs(d_ab) * 0.5
+
             for layer in range(self.n_layers):
                 r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
 
+                d_ta = np.mod(theta - theta_a + np.pi, 2 * np.pi) - np.pi
+                d_tb = np.mod(theta - theta_b + np.pi, 2 * np.pi) - np.pi
+                d_mid = np.mod(theta - mid + np.pi, 2 * np.pi) - np.pi
+
+                radial_a = np.sqrt((r - r_mid) ** 2 + (r_mid * d_ta) ** 2)
+                radial_b = np.sqrt((r - r_mid) ** 2 + (r_mid * d_tb) ** 2)
+                axial_in = np.maximum(np.abs(Z - cz) - hz, 0.0)
+                dist_a = np.sqrt(radial_a ** 2 + axial_in ** 2)
+                dist_b = np.sqrt(radial_b ** 2 + axial_in ** 2)
+                copper_sdf = np.minimum(copper_sdf, dist_a - wr)
+                copper_sdf = np.minimum(copper_sdf, dist_b - wr)
+
+                in_arc = np.abs(d_mid) < half_span
+                arc_d = np.where(in_arc, 0.0, np.minimum(np.abs(d_ta), np.abs(d_tb)))
+
                 for sign in (+1, -1):
-                    z_end = cz + sign * (hz + self.end_turn_gap + cond_half)
-                    mid = 0.5 * (theta_a + theta_b)
-                    half_span = 0.5 * self.coil_span * slot_pitch
-                    d_mid = np.mod(theta - mid + np.pi, 2 * np.pi) - np.pi
-                    in_arc = np.abs(d_mid) < half_span
-                    d_a = np.abs(np.mod(theta - theta_a + np.pi, 2 * np.pi) - np.pi)
-                    d_b = np.abs(np.mod(theta - theta_b + np.pi, 2 * np.pi) - np.pi)
-                    arc_dist = np.where(in_arc, 0.0, np.minimum(d_a, d_b)).astype(np.float32)
+                    z_arc = cz + sign * (hz + self.end_turn_rise * 0.5)
                     dist_end = np.sqrt(
-                        (r - r_mid) ** 2 + (Z - z_end) ** 2 + (r_mid * arc_dist) ** 2
+                        (r - r_mid) ** 2 + (Z - z_arc) ** 2 + (r_mid * arc_d) ** 2
                     )
-                    copper_sdf = np.minimum(copper_sdf, dist_end - cond_half * 0.5)
+                    copper_sdf = np.minimum(copper_sdf, dist_end - wr)
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin), "copper", priority=True)
         return mf
@@ -687,39 +681,71 @@ class ShaftAndBearings:
 
 @dataclass
 class MotorHousing:
-    """Outer cylindrical housing with mounting ears.
+    """Petal-style housing cage with mounting ears and cutout windows.
 
-    Completes the mechanical envelope: a cylindrical shell outside the
-    stator provides structural stiffness and mounting points.  Small
-    mounting ears with bolt holes make it a bolted assembly, not a free-
-    floating core.
+    LEAP 71 ``structural exoskeleton``: instead of a solid cylinder that
+    hides the motor interior, the housing is a ring of petal/blade
+    segments with large angular windows between them.  The windows expose
+    the copper windings and stator teeth, while the blades provide
+    structural stiffness and cooling-surface area.  Mounting ears with
+    bolt holes make it a bolted assembly.
     """
 
     cfg: MotorConfig3D
-    housing_radius: float = 0.058
+    housing_radius: float = 0.055
     housing_thickness: float = 0.003
+    n_blades: int = 8
+    blade_fraction: float = 0.45
     n_mounting_ears: int = 4
-    ear_size: float = 0.008
+    ear_size: float = 0.007
 
     def build(self, mf: MaterialField) -> MaterialField:
         cfg = self.cfg
         cx, cy, cz = cfg.center
-        hz = cfg.stator_half_length
+        hz = cfg.stator_half_length + 0.001
         r_in = self.housing_radius
         r_out = r_in + self.housing_thickness
-        shell = _annulus(cfg, r_in, r_out, hz + 0.002)
-        mf.add(shell, "iron", priority=True)
-        pitch = 2.0 * np.pi / self.n_mounting_ears
+        blade_pitch = 2.0 * np.pi / self.n_blades
+        blade_span = blade_pitch * self.blade_fraction
+        ring_hz = hz + 0.001
+
+        full_ring = _annulus(cfg, r_in, r_out, ring_hz)
+        end_rim_top = _annulus(cfg, r_in, r_out + 0.001, 0.0015)
+        end_rim_bot = end_rim_top
+        cage = full_ring
+        for i in range(self.n_blades):
+            centre = i * blade_pitch + blade_pitch * 0.5
+            window = from_implicit(
+                cfg.shape, cfg.spacing, cfg.origin,
+                annular_sector((cx, cy), r_in - 0.001, r_out + 0.001,
+                               centre - blade_span * 0.5,
+                               centre + blade_span * 0.5, ring_hz),
+            )
+            cage = boolean_subtract(cage, window)
+        rim_top = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
+                                cylinder_z((cx, cy), r_out, 0.0015))
+        rim_top_hole = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
+                                     cylinder_z((cx, cy), r_in, 0.0015))
+        rim_top = boolean_subtract(rim_top, rim_top_hole)
+        mf.add(cage, "iron", priority=True)
+        for sign in (+1, -1):
+            z_rim = cz + sign * (hz + 0.0015)
+            rim = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
+                                cylinder_z((cx, cy), r_out, 0.0016))
+            rim_hole = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
+                                     cylinder_z((cx, cy), r_in, 0.0016))
+            rim = boolean_subtract(rim, rim_hole)
+            mf.add(rim, "iron", priority=True)
+
+        ear_pitch = 2.0 * np.pi / self.n_mounting_ears
         for i in range(self.n_mounting_ears):
-            angle = i * pitch
-            ex = cx + r_out * np.cos(angle)
-            ey = cy + r_out * np.sin(angle)
+            angle = i * ear_pitch + ear_pitch * 0.5
+            ex = float(cx + r_out * np.cos(angle))
+            ey = float(cy + r_out * np.sin(angle))
             ear = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
-                                cylinder_z((float(ex), float(ey)),
-                                           self.ear_size * 0.5, hz + 0.002))
+                                cylinder_z((ex, ey), self.ear_size * 0.5, hz + 0.002))
             bolt = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
-                                 cylinder_z((float(ex), float(ey)),
-                                            self.ear_size * 0.18, hz + 0.002))
+                                 cylinder_z((ex, ey), self.ear_size * 0.2, hz + 0.002))
             ear = boolean_subtract(ear, bolt)
             mf.add(ear, "iron", priority=True)
         return mf
