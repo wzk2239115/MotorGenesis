@@ -403,6 +403,27 @@ $("liveToggle").addEventListener("change", (e) => {
   else if (state.eventSource) { state.eventSource.close(); state.eventSource = null; status("已停止实时跟随", ""); }
 });
 
+$("downloadStl").addEventListener("click", () => {
+  if (!state.currentRun || state.stepIndex < 0) return;
+  const step = state.steps[state.stepIndex];
+  const url = `/api/runs/${encodeURIComponent(state.currentRun)}/checkpoint/${step}/stl?level=${state.level}&smoothing=taubin&iterations=5`;
+  status("正在生成 STL…", "busy");
+  fetch(url)
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.blob();
+    })
+    .then((blob) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `motor_step${String(step).padStart(6, "0")}.stl`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      status(`已下载 step ${step} STL`, "");
+    })
+    .catch((err) => status(`STL 下载失败: ${err.message}`, "error"));
+});
+
 $("sliceField").addEventListener("change", (e) => { sliceState.field = e.target.value; sliceState.index = null; loadSlice(); });
 document.querySelectorAll(".slice-axes button").forEach((btn) => {
   btn.addEventListener("click", () => {

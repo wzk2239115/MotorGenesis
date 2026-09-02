@@ -39,9 +39,10 @@ def _cache_dir(run_dir: Path) -> Path:
 
 
 def _glb_cache_path(
-    run_dir: Path, step: int, level: float, smoothing: str, iterations: int
+    run_dir: Path, step: int, level: float, smoothing: str, iterations: int,
+    npz_mtime: float = 0.0,
 ) -> Path:
-    key = f"step_{step:06d}_level{level:g}_{smoothing}_{iterations}"
+    key = f"step_{step:06d}_level{level:g}_{smoothing}_{iterations}_mt{int(npz_mtime)}"
     digest = hashlib.md5(key.encode()).hexdigest()[:10]
     return _cache_dir(run_dir) / f"{digest}_{key}.glb"
 
@@ -98,7 +99,8 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
         npz = run_dir / "checkpoints" / f"step_{step:06d}.npz"
         if not npz.is_file():
             raise HTTPException(status_code=404, detail="checkpoint not found")
-        cache = _glb_cache_path(run_dir, step, level, smoothing, iterations)
+        npz_mtime = npz.stat().st_mtime
+        cache = _glb_cache_path(run_dir, step, level, smoothing, iterations, npz_mtime)
         if not cache.is_file():
             glb = builder.checkpoint_to_glb(
                 npz,
@@ -108,6 +110,38 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
             )
             cache.write_bytes(glb)
         return Response(content=cache.read_bytes(), media_type="model/gltf-binary")
+
+    @app.get("/api/runs/{run_name}/checkpoint/{step}/stl")
+    def get_checkpoint_stl(
+        run_name: str,
+        step: int,
+        level: float = 0.35,
+        smoothing: str = "taubin",
+        iterations: int = 5,
+    ) -> Response:
+        run_dir = _find_run(run_name)
+        npz = run_dir / "checkpoints" / f"step_{step:06d}.npz"
+        if not npz.is_file():
+            raise HTTPException(status_code=404, detail="checkpoint not found")
+        npz_mtime = npz.stat().st_mtime
+        stl_cache = _cache_dir(run_dir) / f"stl_step_{step:06d}_level{level:g}_{smoothing}_{iterations}_mt{int(npz_mtime)}.stl"
+        if not stl_cache.is_file():
+            glb_bytes = builder.checkpoint_to_glb(
+                npz, level=level, smoothing=smoothing, smoothing_iterations=iterations,
+            )
+            import io
+            import trimesh
+            scene = trimesh.load(io.BytesIO(glb_bytes), file_type="glb", force="scene")
+            meshes = [g for g in scene.geometry.values() if isinstance(g, trimesh.Trimesh) and len(g.faces) > 0]
+            if not meshes:
+                raise HTTPException(status_code=404, detail="no mesh in checkpoint")
+            combined = trimesh.util.concatenate(meshes)
+            stl_cache.write_bytes(combined.export(file_type="stl"))
+        return Response(
+            content=stl_cache.read_bytes(),
+            media_type="model/stl",
+            headers={"Content-Disposition": f"attachment; filename=motor_step{step:06d}.stl"},
+        )
 
     @app.get("/api/runs/{run_name}/mesh/{name}")
     def get_mesh_file(run_name: str, name: str) -> FileResponse:

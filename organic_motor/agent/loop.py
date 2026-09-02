@@ -134,6 +134,7 @@ class AgentLoop:
         agent: Callable[[str], str] | None = None,
         max_iters: int = 5,
         baseline_code: str = BASELINE_CODE,
+        display_shape: tuple[int, int, int] | None = (160, 160, 96),
     ):
         self.cfg = cfg
         self.out_dir = Path(out_dir)
@@ -142,6 +143,8 @@ class AgentLoop:
         self.agent = agent
         self.max_iters = max_iters
         self.baseline_code = baseline_code
+        from dataclasses import replace
+        self.display_cfg = replace(cfg, shape=display_shape) if display_shape else None
 
     def _score(self, code: str) -> tuple[dict, str | None, object, object]:
         mf, mag, err = execute_agent_code(code, self.cfg)
@@ -160,8 +163,15 @@ class AgentLoop:
             metrics, err, mf, mag = self._score(code)
             elapsed = time.perf_counter() - t0
             if mf is not None:
+                save_cfg = self.cfg
+                save_mf = mf
+                if self.display_cfg is not None:
+                    mf_display, _, err_d = execute_agent_code(code, self.display_cfg)
+                    if mf_display is not None:
+                        save_mf = mf_display
+                        save_cfg = self.display_cfg
                 save_checkpoint(
-                    mf, self.cfg,
+                    save_mf, save_cfg,
                     self.out_dir / "checkpoints" / f"step_{i:06d}.npz",
                     step=i, metrics=metrics, magnetization=mag,
                 )

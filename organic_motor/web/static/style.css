@@ -99,6 +99,14 @@ footer { margin-top: auto; padding-top: 6px; }
 .hud { position: absolute; top: 10px; right: 14px; z-index: 5; }
 .hud span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
+.download-btn {
+  width: 100%; margin-top: 6px; padding: 6px 10px;
+  background: #1a3040; color: #7ec8e8;
+  border: 1px solid #2a4a5a; border-radius: 4px;
+  cursor: pointer; font-size: 12px;
+}
+.download-btn:hover { background: #234; color: #a0d8f0; }
+
 @media (max-width: 720px) {
   #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   #sidebar { max-height: 42vh; }

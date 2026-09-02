@@ -362,7 +362,7 @@ class Winding3D:
     cfg: MotorConfig3D
     n_slots: int = 12
     coil_span: int = 3
-    n_layers: int = 2
+    n_layers: int = 4
     wire_radius: float = 0.0025
     end_turn_rise: float = 0.003
     end_turn_gap: float = 0.001
