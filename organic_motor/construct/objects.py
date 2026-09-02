@@ -721,17 +721,12 @@ class MotorHousing:
         for i in range(self.n_blades):
             centre = i * blade_pitch + blade_pitch * 0.5
             d_theta = np.mod(theta - centre + np.pi, 2 * np.pi) - np.pi
-            in_window = np.abs(d_theta) < blade_span * 0.5
-            angular_d = np.where(in_window, 0.0, np.abs(d_theta) - blade_span * 0.5)
+            angular_d = np.abs(d_theta) - blade_span * 0.5
             window_sdf = np.maximum(
                 np.maximum(r - (r_out + 0.002), (r_in - 0.002) - r),
                 np.maximum(angular_d, np.abs(Z - cz) - (hz + 0.002))
             ).astype(np.float32)
-            ring_sdf = np.where(
-                window_sdf < 0,
-                np.maximum(ring_sdf, -window_sdf),
-                ring_sdf
-            ).astype(np.float32)
+            ring_sdf = np.maximum(ring_sdf, -window_sdf).astype(np.float32)
 
         mf.add(SDFVoxelField(sdf=ring_sdf, spacing=cfg.spacing, origin=cfg.origin),
                "iron", priority=True)
@@ -763,14 +758,18 @@ class MotorHousing:
 class FunctionalVoids:
     """Protected functional voids subtracted from ALL materials last.
 
-    The radial air gap between rotor and stator must never be bridged.
-    This final pass subtracts the gap annulus from every material in the
-    field, ensuring that later additions cannot fill it.  This is the
-    LEAP 71 ``functional void first`` principle enforced as a guaranteed
-    final pass — the voids are defined last but are absolute.
+    The radial air gap between the rotor's outermost solid (sleeve/magnet)
+    and the stator inner surface must never be bridged.  This final pass
+    subtracts that gap annulus from every material, ensuring later
+    additions cannot fill it.  This is the LEAP 71 ``functional void
+    first`` principle enforced as a guaranteed final pass.
+
+    The void starts at the sleeve outer surface, NOT at R_rotor_outer —
+    otherwise the PM and sleeve would be deleted along with the gap.
     """
 
     cfg: MotorConfig3D
+    rotor_solid_outer: float = 0.0
 
     def build(self, mf: MaterialField) -> MaterialField:
         from organic_motor.construct.field import SDFVoxelField
@@ -781,7 +780,11 @@ class FunctionalVoids:
 
         _X, _Y, Z, r, _theta = _angles_of(cfg)
 
-        radial_gap = np.maximum(r - cfg.R_stator_inner, cfg.R_rotor_outer - r)
+        r_eff = self.rotor_solid_outer
+        if r_eff <= 0.0:
+            r_eff = min(cfg.R_rotor_outer + 0.0044, cfg.R_stator_inner - 0.0005)
+
+        radial_gap = np.maximum(r - cfg.R_stator_inner, (r_eff + 0.0001) - r)
         axial_limit = np.abs(Z - cz) - hz
         gap_sdf = np.maximum(radial_gap, axial_limit)
 
