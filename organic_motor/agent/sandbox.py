@@ -46,6 +46,7 @@ from organic_motor.construct.objects import (
     FieldDrivenCoolingJacket,
     FieldDrivenMagnets,
     FieldDrivenStatorYoke,
+    FunctionalVoids,
     HelicalCoolingChannels,
     MotorHousing,
     RotorCore,
@@ -65,6 +66,7 @@ from organic_motor.construct.fields_motor import (
     magnetization_field,
 )
 from organic_motor.construct.field import ScalarField, VectorField
+from organic_motor.construct.winding_netlist import CoilNetlist, default_netlist
 from organic_motor.construct.modulation import (
     ConstField,
     FuncField,
@@ -142,6 +144,8 @@ def make_namespace(cfg: MotorConfig3D) -> dict:
         "MotorHousing": MotorHousing,
         "StatorSegmentation": StatorSegmentation,
         "Winding3D": Winding3D,
+        "FunctionalVoids": FunctionalVoids,
+        "CoilNetlist": CoilNetlist,
     }
 
 

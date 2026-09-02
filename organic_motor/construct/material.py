@@ -38,6 +38,7 @@ class MaterialField:
     spacing: tuple[float, float, float]
     origin: tuple[float, float, float]
     sdfs: dict[str, SDFVoxelField] = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if len(self.shape) != 3 or any(n < 2 for n in self.shape):

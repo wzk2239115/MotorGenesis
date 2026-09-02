@@ -59,11 +59,20 @@ def _metrics_table(metrics: dict) -> str:
         "iron_loss_W", "loss_W", "temperature_max_C",
         "vol_iron", "vol_copper", "vol_pm",
         "maxwell_residual", "thermal_residual", "electric_residual",
+        "copper_components", "copper_min_gap_mm",
+        "air_gap_iron_bridge", "shaft_rotor_merge",
+        "housing_open_area_ratio", "end_face_occlusion",
     )
     lines = []
     for k in keys:
         if k in metrics:
-            lines.append(f"  {k:<24} {metrics[k]:.4g}")
+            val = metrics[k]
+            if isinstance(val, bool):
+                lines.append(f"  {k:<28} {val}")
+            elif isinstance(val, float):
+                lines.append(f"  {k:<28} {val:.4g}")
+            else:
+                lines.append(f"  {k:<28} {val}")
     return "\n".join(lines) if lines else "  (no metrics)"
 
 
@@ -89,6 +98,25 @@ def _diagnosis(metrics: dict, error: str | None) -> str:
         parts.append("Too hot: reduce copper loss (less current path resistance) or add cooling.")
     if metrics.get("vol_pm", 0.0) > 0.15:
         parts.append("PM volume is high (penalised); a thinner or narrower magnet may suffice.")
+    cc = metrics.get("copper_components", -1)
+    if cc == 1:
+        parts.append("WARNING: copper is ONE connected component -- the winding is shorted into a ring. "
+                     "Reduce wire radius or increase radial spacing between layers so coils are distinct.")
+    elif cc > 12:
+        parts.append(f"Copper has {cc} components -- winding is fragmented. Check end-turn connectivity.")
+    if metrics.get("air_gap_iron_bridge", False):
+        parts.append("WARNING: iron bridges the air gap -- rotor and stator are electrically/magnetically shorted. "
+                     "Ensure FunctionalVoids is called last to protect the gap.")
+    if metrics.get("shaft_rotor_merge", False):
+        parts.append("WARNING: shaft and rotor iron are merged -- no air gap between shaft and rotor bore. "
+                     "Increase RotorCore clearance.")
+    hoa = metrics.get("housing_open_area_ratio", 0.0)
+    if hoa < 0.1:
+        parts.append("Housing is nearly solid -- no windows visible. Add angular cutouts to the housing shell.")
+    efo = metrics.get("end_face_occlusion", 0.0)
+    if efo > 0.8:
+        parts.append("End face is mostly solid iron -- housing rims block the interior view. "
+                     "Segment end rings with angular windows.")
     return " ".join(parts) if parts else "Design is reasonable; refine for more torque or less loss."
 
 
@@ -146,13 +174,28 @@ class AgentLoop:
         from dataclasses import replace
         self.display_cfg = replace(cfg, shape=display_shape) if display_shape else None
 
-    def _score(self, code: str) -> tuple[dict, str | None, object, object]:
+    def _score(self, code: str):
+        """Score code at physics resolution; geometry metrics at display resolution.
+
+        Returns (metrics, error, mf, mag, mf_display).  The display rebuild
+        serves double duty: geometric quality metrics (wires thinner than
+        the physics voxel only resolve at display resolution) and the
+        high-resolution checkpoint saved for the viewer.
+        """
         mf, mag, err = execute_agent_code(code, self.cfg)
         if err is not None:
-            return {"obj": float("inf"), "error": True}, err, None, None
-        metrics = score_fields(mf, self.cfg, mag)
+            return {"obj": float("inf"), "error": True}, err, None, None, None
+        mf_display = None
+        if self.display_cfg is not None:
+            mf_display, _, err_d = execute_agent_code(code, self.display_cfg)
+            if err_d is not None:
+                mf_display = None
+        metrics = score_fields(
+            mf, self.cfg, mag,
+            geometry_mf=mf_display, geometry_cfg=self.display_cfg,
+        )
         metrics["materials"] = mf.materials_present()
-        return metrics, None, mf, mag
+        return metrics, None, mf, mag, mf_display
 
     def run(self) -> RunResult:
         result = RunResult(out_dir=self.out_dir)
@@ -160,16 +203,14 @@ class AgentLoop:
         print(f"[agent] loop start; {self.max_iters} iters; out={self.out_dir}")
         for i in range(self.max_iters):
             t0 = time.perf_counter()
-            metrics, err, mf, mag = self._score(code)
+            metrics, err, mf, mag, mf_display = self._score(code)
             elapsed = time.perf_counter() - t0
             if mf is not None:
                 save_cfg = self.cfg
                 save_mf = mf
-                if self.display_cfg is not None:
-                    mf_display, _, err_d = execute_agent_code(code, self.display_cfg)
-                    if mf_display is not None:
-                        save_mf = mf_display
-                        save_cfg = self.display_cfg
+                if mf_display is not None:
+                    save_mf = mf_display
+                    save_cfg = self.display_cfg
                 save_checkpoint(
                     save_mf, save_cfg,
                     self.out_dir / "checkpoints" / f"step_{i:06d}.npz",

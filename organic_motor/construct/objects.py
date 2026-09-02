@@ -81,7 +81,7 @@ class RotorCore:
     """Laminated rotor back-iron annulus with a shaft bore."""
 
     cfg: MotorConfig3D
-    clearance: float = 0.0006
+    clearance: float = 0.004  # 4mm gap so shaft and rotor don't merge at any resolution
 
     def build(self, mf: MaterialField) -> MaterialField:
         cfg = self.cfg
@@ -347,28 +347,38 @@ class DistributedWinding:
 
 @dataclass
 class Winding3D:
-    """Real 3D distributed winding with slot conductors and end turns.
+    """Real 3D distributed winding with phase-separated radial layers.
 
     Each coil is a continuous copper loop: two straight axial sections in
-    slots on opposite sides of a tooth, connected by curved end turns that
-    arc over the stator ends.  Multiple concentric turns give the layered
-    coil-pack appearance of a real form-wound or hairpin winding.
+    slots on opposite sides of a pole, connected by end-turn arcs at the
+    stator ends.
 
-    This replaces the continuous copper annulus with readable coil geometry
-    that has clear slot conductors, end-winding overhangs and turn-to-turn
-    spacing -- the visual signature of a real motor.
+    Electrical topology (phase insulation by construction): slots are
+    assigned to phases A/C'/B rotationally, and each slot's conductors live
+    ONLY on radial layers belonging to that phase (layers p, p+3, p+6, ...
+    for phase p).  Because every layer is a distinct radius band, arcs and
+    conductors of different phases can never touch -- phase-to-phase
+    insulation is geometric, not hoped for.  Coils of one phase chain
+    through shared slot conductors, so each phase forms one connected
+    network per layer group (parallel paths), exactly like a real lap
+    winding.
     """
 
     cfg: MotorConfig3D
     n_slots: int = 12
     coil_span: int = 3
-    n_layers: int = 4
-    wire_radius: float = 0.0025
-    end_turn_rise: float = 0.003
-    end_turn_gap: float = 0.001
+    n_layers: int = 3  # one radial layer per phase (phase insulation by radius)
+    wire_radius: float = 0.0  # 0 = auto from layer spacing (35% fill)
+    end_turn_rise: float = 0.0005
+    end_turn_gap: float = 0.001  # kept for API compat
+
+    def _slot_layers(self, phase: int) -> list[int]:
+        """Radial layers hosting conductors of ``phase`` (every 3rd layer)."""
+        return list(range(phase, self.n_layers, 3))
 
     def build(self, mf: MaterialField) -> MaterialField:
         from organic_motor.construct.field import SDFVoxelField
+        from organic_motor.construct.winding_netlist import CoilNetlist
 
         cfg = self.cfg
         cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
@@ -376,11 +386,23 @@ class Winding3D:
         r_wi = cfg.R_winding_inner
         r_wo = cfg.R_winding_outer
         slot_pitch = 2.0 * np.pi / self.n_slots
-        wr = self.wire_radius
+        if self.wire_radius > 0.0:
+            wr = self.wire_radius
+        else:
+            # 35% of layer spacing: inter-layer insulation gap is 30% of
+            # the spacing (~0.65mm), resolvable at display resolution and
+            # realistic for real phase insulation.
+            wr = 0.35 * (r_wo - r_wi) / self.n_layers
+
+        netlist = CoilNetlist(
+            n_slots=self.n_slots, pole_pairs=cfg.pole_pairs,
+            n_phases=3, coil_span=self.coil_span,
+            n_layers=self.n_layers, turns_per_coil=1, connection="star",
+        )
+        phase_of_slot = netlist.slot_phase_assignment()
 
         X, Y, Z, r, theta = _angles_of(cfg)
         copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
-        n_arc_samples = 16
 
         for coil in range(self.n_slots):
             slot_a = coil
@@ -388,8 +410,9 @@ class Winding3D:
             theta_a = slot_a * slot_pitch
             theta_b = slot_b * slot_pitch
             d_ab = np.mod(theta_b - theta_a + np.pi, 2 * np.pi) - np.pi
+            phase = int(phase_of_slot[coil])
 
-            for layer in range(self.n_layers):
+            for layer in self._slot_layers(phase):
                 r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
 
                 d_ta = np.mod(theta - theta_a + np.pi, 2 * np.pi) - np.pi
@@ -402,8 +425,13 @@ class Winding3D:
 
                 for sign in (+1, -1):
                     z_base = cz + sign * hz
-                    for si in range(n_arc_samples):
-                        s = (si + 0.5) / n_arc_samples
+                    # Arc sample spacing <= 1.2*wire radius so adjacent bead
+                    # capsules overlap and the end turn stays continuous even
+                    # for thin wires (a fixed 16 samples gaps at small wr).
+                    arc_length = abs(d_ab) * r_mid + self.end_turn_rise
+                    n_arc = max(16, int(np.ceil(arc_length / (1.2 * wr))))
+                    for si in range(n_arc):
+                        s = (si + 0.5) / n_arc
                         theta_s = theta_a + s * d_ab
                         z_s = z_base + sign * self.end_turn_rise * np.sin(np.pi * s)
                         d_ts = np.mod(theta - theta_s + np.pi, 2 * np.pi) - np.pi
@@ -413,6 +441,7 @@ class Winding3D:
                         copper_sdf = np.minimum(copper_sdf, dist_s.astype(np.float32) - wr)
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin), "copper", priority=True)
+        mf.metadata["winding_netlist"] = netlist
         return mf
 
 
@@ -649,13 +678,16 @@ class ShaftAndBearings:
 
         parts = [shaft_sdf]
         for sign in (+1, -1):
-            z_b = cz + sign * (hz + bearing_half)
+            # Bearing sits fully beyond the rotor end so it never bridges
+            # shaft and rotor iron (rotor ends at rotor_half_length).
+            z_b = cz + sign * (cfg.rotor_half_length + cfg.axial_airgap + self.bearing_width + bearing_half)
             axial_b = np.abs(Z - z_b) - bearing_half
             bearing_outer = np.maximum(r - r_bearing, axial_b)
             bearing_hole = np.maximum(r - r_shaft, axial_b)
             parts.append(np.maximum(bearing_outer, -bearing_hole))
 
-            z_c = cz + sign * (hz + self.bearing_width + cap_half)
+            z_c = cz + sign * (cfg.rotor_half_length + cfg.axial_airgap + self.bearing_width
+                               + self.end_cap_thickness + cap_half + 0.004)
             axial_c = np.abs(Z - z_c) - cap_half
             cap_outer = np.maximum(r - r_cap, axial_c)
             cap_hole = np.maximum(r - (r_bearing + 0.001), axial_c)
@@ -736,6 +768,15 @@ class MotorHousing:
             z_rim = cz + sign * (hz + ring_half)
             axial_rim = np.abs(Z - z_rim) - ring_half
             rim_sdf = np.maximum(r - r_out, np.maximum(r_in - r, axial_rim))
+            for i in range(self.n_blades):
+                centre = i * blade_pitch + blade_pitch * 0.5
+                d_theta = np.mod(theta - centre + np.pi, 2 * np.pi) - np.pi
+                angular_d = np.abs(d_theta) - blade_span * 0.5
+                window_sdf = np.maximum(
+                    np.maximum(r - (r_out + 0.002), (r_in - 0.002) - r),
+                    np.maximum(angular_d, axial_rim)
+                ).astype(np.float32)
+                rim_sdf = np.maximum(rim_sdf, -window_sdf).astype(np.float32)
             mf.add(SDFVoxelField(sdf=rim_sdf.astype(np.float32),
                                  spacing=cfg.spacing, origin=cfg.origin),
                    "iron", priority=True)

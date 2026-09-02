@@ -95,8 +95,14 @@ def normalized_magnetization3d(
     return cfg.M_sat * rho_pm[..., None] * unit
 
 
-def _phase_belts(cfg: MotorConfig3D) -> jnp.ndarray:
-    """Three disjoint phase belts; each contains positive and negative coil sides."""
+def _phase_belts(cfg: MotorConfig3D, override: jnp.ndarray | None = None) -> jnp.ndarray:
+    """Three disjoint phase belts; each contains positive and negative coil sides.
+
+    If ``override`` is provided (from a CoilNetlist), it is used directly.
+    Otherwise the analytic cosine assignment is used as a fallback.
+    """
+    if override is not None:
+        return override
     X, Y, _ = meshgrid3d(cfg)
     cx, cy, _ = cfg.center
     radius = jnp.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
@@ -118,7 +124,8 @@ def _phase_belts(cfg: MotorConfig3D) -> jnp.ndarray:
 
 
 def three_phase_impressed_source3d(
-    rho_copper: jnp.ndarray, electrical_angle: float, cfg: MotorConfig3D
+    rho_copper: jnp.ndarray, electrical_angle: float, cfg: MotorConfig3D,
+    phase_belts_override: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return total and per-phase impressed ``Jz`` fields in A/m².
 
@@ -126,7 +133,7 @@ def three_phase_impressed_source3d(
     exactly constant along z.  Opposite coil sides are normalized to equal
     discrete current, hence each phase has zero net current.
     """
-    belts = _phase_belts(cfg)
+    belts = _phase_belts(cfg, phase_belts_override)
     conductor = jnp.broadcast_to(
         jnp.mean(jnp.clip(rho_copper, 0.0, 1.0), axis=2, keepdims=True),
         cfg.shape,
@@ -150,9 +157,11 @@ def three_phase_impressed_source3d(
     return jnp.sum(phase_jz, axis=0), phase_jz
 
 
-def phase_terminal_masks3d(cfg: MotorConfig3D) -> jnp.ndarray:
+def phase_terminal_masks3d(
+    cfg: MotorConfig3D, phase_belts_override: jnp.ndarray | None = None,
+) -> jnp.ndarray:
     """Boolean phase terminals on the two ends of the winding region."""
-    belts = _phase_belts(cfg) != 0.0
+    belts = _phase_belts(cfg, phase_belts_override) != 0.0
     _, _, Z = meshgrid3d(cfg)
     ends = (
         jnp.abs(jnp.abs(Z - cfg.center[2]) - cfg.stator_half_length)
@@ -162,7 +171,8 @@ def phase_terminal_masks3d(cfg: MotorConfig3D) -> jnp.ndarray:
 
 
 def three_phase_terminal_conduction3d(
-    rho_copper: jnp.ndarray, electrical_angle: float, cfg: MotorConfig3D
+    rho_copper: jnp.ndarray, electrical_angle: float, cfg: MotorConfig3D,
+    phase_belts_override: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Solve three terminal-driven conductor fields.
 
@@ -171,8 +181,8 @@ def three_phase_terminal_conduction3d(
     while allowing the current magnitude and Joule heat to respond to the
     genuine ``rho_copper(x,y,z)`` field.
     """
-    belts = _phase_belts(cfg)
-    terminals = phase_terminal_masks3d(cfg)
+    belts = _phase_belts(cfg, phase_belts_override)
+    terminals = phase_terminal_masks3d(cfg, phase_belts_override)
     _, _, Z = meshgrid3d(cfg)
     axial_sign = jnp.where(Z >= cfg.center[2], 1.0, -1.0)
     phase_amplitude = jnp.cos(
@@ -256,7 +266,8 @@ def _rotated_materials(
 
 
 def _source_residuals(
-    phase_current: jnp.ndarray, cfg: MotorConfig3D
+    phase_current: jnp.ndarray, cfg: MotorConfig3D,
+    phase_belts_override: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     if phase_current.ndim == 4:
         zeros = jnp.zeros_like(phase_current)
@@ -267,7 +278,7 @@ def _source_residuals(
     div_res = h * jnp.linalg.norm(div) / jnp.maximum(
         jnp.linalg.norm(total), 1e-12
     )
-    terminals = phase_terminal_masks3d(cfg)
+    terminals = phase_terminal_masks3d(cfg, phase_belts_override)
     _, _, Z = meshgrid3d(cfg)
     outward = jnp.where(Z >= cfg.center[2], 1.0, -1.0)
     terminal_flux = phase_current[..., 2] * terminals * outward
@@ -282,6 +293,7 @@ def _forward3d_core(
     fields: TopologyFields3D,
     magnetization_raw: jnp.ndarray,
     angles: Sequence[float] | jnp.ndarray | None,
+    phase_belts_override: jnp.ndarray | None = None,
 ) -> ForwardResult3D:
     """Body of :func:`forward3d` once the topology fields are assembled.
 
@@ -307,12 +319,12 @@ def _forward3d_core(
         if cfg.excitation_mode == "terminal":
             J, phase_current, q_cu, electric_residual, phase_balance = (
                 three_phase_terminal_conduction3d(
-                    fields.rho_copper, electrical_angle, cfg
+                    fields.rho_copper, electrical_angle, cfg, phase_belts_override,
                 )
             )
         else:
             jz, phase_jz = three_phase_impressed_source3d(
-                fields.rho_copper, electrical_angle, cfg
+                fields.rho_copper, electrical_angle, cfg, phase_belts_override,
             )
             zeros = jnp.zeros_like(jz)
             J = jnp.stack((zeros, zeros, jz), axis=-1)
@@ -332,7 +344,7 @@ def _forward3d_core(
             )
             q_cu = jnp.where(conductor > 1e-6, q_cu, 0.0)
             electric_residual = jnp.asarray(0.0, dtype=q_cu.dtype)
-            _, phase_balance = _source_residuals(phase_current, cfg)
+            _, phase_balance = _source_residuals(phase_current, cfg, phase_belts_override)
         A = magnetostatic_solve(nu, M, J, cfg)
         B = jnp.stack(flux_density(A, cfg), axis=-1)
         torque = maxwell_torque(B[..., 0], B[..., 1], B[..., 2], cfg)[2]
@@ -373,7 +385,7 @@ def _forward3d_core(
     if cfg.excitation_mode == "terminal":
         source_div = jnp.max(jnp.stack(electric_residuals))
     else:
-        source_div, phase_balance = _source_residuals(last[5], cfg)
+        source_div, phase_balance = _source_residuals(last[5], cfg, phase_belts_override)
     return ForwardResult3D(
         fields.rho_air,
         fields.rho_iron,
@@ -421,6 +433,7 @@ def forward3d_fields(
     fields: TopologyFields3D,
     magnetization_raw: jnp.ndarray,
     angles: Sequence[float] | jnp.ndarray | None = None,
+    phase_belts_override: jnp.ndarray | None = None,
 ) -> ForwardResult3D:
     """Critic entry point: score an already-assembled constructed topology.
 
@@ -428,8 +441,13 @@ def forward3d_fields(
     bypasses the softmax/masking of :func:`assemble3d` so the geometry the
     critic solves is exactly what was constructed (cooling jackets, shaft
     bores and other non-design-region solids are preserved).
+
+    If ``phase_belts_override`` is provided (from a CoilNetlist), the solver
+    uses the actual winding topology instead of the analytic cosine phase
+    belts.  This is what makes the visible winding and the solved winding
+    the same object.
     """
-    return _forward3d_core(cfg, fields, magnetization_raw, angles)
+    return _forward3d_core(cfg, fields, magnetization_raw, angles, phase_belts_override)
 
 
 def _anchor_seeds(cfg: MotorConfig3D) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:

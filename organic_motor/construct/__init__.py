@@ -56,6 +56,9 @@ from organic_motor.construct.objects import (
 )
 from organic_motor.construct.realize import realize
 from organic_motor.construct.critic import score, score_fields
+from organic_motor.construct.winding_netlist import CoilNetlist, default_netlist
+from organic_motor.construct.geometry_metrics import compute_geometry_metrics
+from organic_motor.construct.phase_verify import verify_phase_connectivity
 
 __all__ = [
     "SDFVoxelField",
@@ -102,4 +105,8 @@ __all__ = [
     "realize",
     "score",
     "score_fields",
+    "CoilNetlist",
+    "default_netlist",
+    "compute_geometry_metrics",
+    "verify_phase_connectivity",
 ]
