@@ -113,16 +113,21 @@ class CoilNetlist:
         return belt
 
     def _slot_polarity(self, slot: int, layer: int) -> int:
-        """Coil-side sign at (slot, layer).
+        """Coil-side sign at (slot, layer): the standard 12s4p winding table.
 
-        All layers of a slot belong to the same phase and carry the same
-        polarity: they are parallel paths of the same coil, so the sign
-        alternates with pole (slot) only, never with layer.
+        Phases occupy slots in sequence (A, B, C, A, ...) but each phase's
+        entry polarity follows a phase-shifted cosine, so the three layers'
+        spatial MMF fundamentals sum to a PURE forward-rotating wave
+        (forward phasors {0,0,0} elec, backward {0,+120,-120} summing to
+        zero).  With naive pole-parity signs the backward wave dominates
+        and the synchronous torque collapses to a zero-mean oscillation.
         """
-        poles_total = 2 * self.pole_pairs
-        slots_per_pole = self.n_slots / poles_total
-        pole = int(slot / slots_per_pole)
-        return 1 if pole % 2 == 0 else -1
+        theta = slot * 2.0 * np.pi / self.n_slots
+        phase = self._slot_phase(slot)
+        # A -> 0, B -> 4*pi/3, C -> 2*pi/3 (the winding-table entry angles)
+        psi = ((2 * phase) % self.n_phases) * 2.0 * np.pi / self.n_phases
+        c = np.cos(self.pole_pairs * theta - psi)
+        return 1 if c >= 0.0 else -1
 
     def slot_phase_assignment(self) -> np.ndarray:
         """Return ``(n_slots,)`` int array: phase index per slot (0=A,1=B,2=C)."""
@@ -175,9 +180,10 @@ class CoilNetlist:
         belts = np.zeros((3, nx, ny, nz), dtype=np.float32)
         for ph in range(3):
             # A radial layer hosts conductors of exactly one phase
-            # (Winding3D._slot_layers), so the belt is the whole annular
-            # layer -- including end-turn arcs that cross other slots'
-            # angular zones; their current still belongs to this phase.
+            # (Winding3D._slot_layers), so the belt is that annular layer.
+            # The z-range is NOT restricted here: terminal conduction needs
+            # the full copper network, and the impressed source applies its
+            # own slot-region mask where axial currents are physical.
             layer_owns = (layer_idx % self.n_phases) == ph
             mask2d = in_annulus & layer_owns
             belts[ph] = np.broadcast_to(

@@ -54,6 +54,7 @@ class Powered3DSettings:
     phase_resistance: float = 0.4
     phase_inductance: float = 2.0e-3
     flux_linkage: float = 0.03
+    current_limit: float | None = None  # A per phase; None = unlimited
     load_torque: float = 0.0
     load_viscous: float = 1.0e-4
     rotor_inertia: float = 2.0e-4
@@ -249,6 +250,7 @@ def run_powered3d(
     settings: Powered3DSettings,
     *,
     forward_solver: Callable[..., ForwardResult3D] | None = None,
+    initial_angle: float = 0.0,
 ) -> tuple[dict[str, np.ndarray], dict]:
     """Run field maps, structural loading, and map-driven transient dynamics."""
     solver = forward3d if forward_solver is None else forward_solver
@@ -297,13 +299,13 @@ def run_powered3d(
     displacement = np.asarray(mechanics.displacement)
     collision = _collision_diagnostics(displacement, cfg)
 
-    state_rotor = RotorState(jnp.asarray(0.0), jnp.asarray(0.0))
+    state_rotor = RotorState(jnp.asarray(initial_angle), jnp.asarray(0.0))
     state_circuit = ThreePhaseState(jnp.zeros(3))
     temperature = jnp.asarray(temperature_map.mean(axis=0))
-    previous_b = jnp.asarray(periodic_interpolate(b_map, map_angles, 0.0, period))
+    previous_b = jnp.asarray(periodic_interpolate(b_map, map_angles, initial_angle, period))
     nominal_current = _nominal_phase_current(base, cfg)
     time = np.arange(settings.steps + 1) * settings.dt
-    rotor_angle = np.zeros(settings.steps + 1)
+    rotor_angle = np.full(settings.steps + 1, initial_angle)
     speed = np.zeros(settings.steps + 1)
     currents = np.zeros((settings.steps + 1, 3))
     torque_history = np.zeros(settings.steps)
@@ -335,6 +337,13 @@ def run_powered3d(
             settings.phase_inductance,
             settings.dt,
         )
+        if settings.current_limit is not None:
+            # Current-limited drive (inverter current loop): clamp each phase
+            # and re-centre so the zero-sequence stays null.
+            clamped = jnp.clip(
+                state_circuit.currents, -settings.current_limit, settings.current_limit
+            )
+            state_circuit = ThreePhaseState(clamped - jnp.mean(clamped))
         torque_wave = jnp.cos(electrical_angle + phase_shifts)
         current_scale = jnp.sum(state_circuit.currents * torque_wave) / (
             1.5 * nominal_current

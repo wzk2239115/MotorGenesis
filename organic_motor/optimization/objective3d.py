@@ -132,28 +132,40 @@ def three_phase_impressed_source3d(
     Copper is averaged axially and rebroadcast, making every phase current
     exactly constant along z.  Opposite coil sides are normalized to equal
     discrete current, hence each phase has zero net current.
+
+    The source is restricted to the SLOT region (``|z| <= stack/2``): the
+    end-turn arcs carry circumferential current, and forcing an axial Jz on
+    them creates a spurious MMF that cancels the slot currents.  This is
+    the classical machine assumption (end-turn leakage neglected).  The
+    positive/negative normalisation sums use the mid-plane slice, where the
+    winding always has conductor, rather than the z = 0 grid plane.
     """
     belts = _phase_belts(cfg, phase_belts_override)
     conductor = jnp.broadcast_to(
         jnp.mean(jnp.clip(rho_copper, 0.0, 1.0), axis=2, keepdims=True),
         cfg.shape,
     )
+    mid_z = cfg.shape[2] // 2
     phase_currents = jnp.cos(
         electrical_angle
         - jnp.asarray((0.0, 2.0 * jnp.pi / 3.0, 4.0 * jnp.pi / 3.0))
     )
+    _, _, Z = meshgrid3d(cfg)
+    slot_region = (
+        jnp.abs(Z - cfg.center[2]) <= cfg.rotor_half_length
+    ).astype(conductor.dtype)
     sources = []
     tiny = 1e-12
     for phase in range(3):
         positive = conductor * (belts[phase] > 0)
         negative = conductor * (belts[phase] < 0)
-        pos_sum = jnp.sum(positive[:, :, 0])
-        neg_sum = jnp.sum(negative[:, :, 0])
+        pos_sum = jnp.sum(positive[:, :, mid_z])
+        neg_sum = jnp.sum(negative[:, :, mid_z])
         usable = (pos_sum > tiny) & (neg_sum > tiny)
         negative_scale = pos_sum / jnp.maximum(neg_sum, tiny)
         basis = jnp.where(usable, positive - negative_scale * negative, 0.0)
         sources.append(cfg.current_density_peak * phase_currents[phase] * basis)
-    phase_jz = jnp.stack(sources, axis=0)
+    phase_jz = jnp.stack(sources, axis=0) * slot_region
     return jnp.sum(phase_jz, axis=0), phase_jz
 
 
@@ -418,6 +430,7 @@ def forward3d(
     magnetization_raw: jnp.ndarray,
     angles: Sequence[float] | jnp.ndarray | None = None,
     temperature: float | None = None,
+    phase_belts_override: jnp.ndarray | None = None,
 ) -> ForwardResult3D:
     """Run native 3-D Maxwell solves at multiple mechanical rotor angles.
 
@@ -425,7 +438,7 @@ def forward3d(
     runs the shared physics core.  This is the optimisation-time entry point.
     """
     fields = assemble3d(logits, rotor_logits, cfg, temperature)
-    return _forward3d_core(cfg, fields, magnetization_raw, angles)
+    return _forward3d_core(cfg, fields, magnetization_raw, angles, phase_belts_override)
 
 
 def forward3d_fields(
