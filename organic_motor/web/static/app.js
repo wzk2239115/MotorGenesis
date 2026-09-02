@@ -265,7 +265,30 @@ async function selectRun(name) {
     $("loadText").textContent = "此运行尚无 checkpoint。";
     status("无 checkpoint", "error");
   }
+  loadStartupPanel(name);
   if (state.live) startLive(name);
+}
+
+async function loadStartupPanel(run) {
+  const panel = $("startupPanel");
+  const verdict = $("startupVerdict");
+  const anglesDiv = $("startupAngles");
+  try {
+    const res = await fetch(`/api/runs/${encodeURIComponent(run)}/startup`);
+    if (!res.ok) { panel.style.display = "none"; return; }
+    const s = await res.json();
+    panel.style.display = "";
+    verdict.textContent = s.passed ? "✅ 通过 (仿真层面可旋转)" : "❌ 未通过";
+    verdict.style.color = s.passed ? "#7ee08a" : "#e08a7e";
+    anglesDiv.innerHTML = (s.angles || []).map((a) => {
+      const cls = a.passed ? "pass" : "fail";
+      const rpm = (a.final_speed_rad_s * 60 / (2 * Math.PI)).toFixed(0);
+      return `<div class="ang ${cls}"><span>θ₀ ${Math.round(a.initial_angle_rad * 180 / Math.PI)}°</span>` +
+             `<span>${a.final_speed_rad_s >= 0 ? "+" : ""}${a.final_speed_rad_s.toFixed(1)} rad/s (${rpm} rpm)</span></div>`;
+    }).join("");
+  } catch {
+    panel.style.display = "none";
+  }
 }
 
 function renderTimeline(summary) {

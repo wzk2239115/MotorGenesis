@@ -107,6 +107,15 @@ footer { margin-top: auto; padding-top: 6px; }
 }
 .download-btn:hover { background: #234; color: #a0d8f0; }
 
+.startup-angles { margin-top: 4px; }
+.startup-angles .ang {
+  font-size: 11px; color: var(--muted);
+  display: flex; justify-content: space-between;
+  padding: 1px 0; font-variant-numeric: tabular-nums;
+}
+.startup-angles .ang.pass { color: #7ee08a; }
+.startup-angles .ang.fail { color: #e08a7e; }
+
 @media (max-width: 720px) {
   #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   #sidebar { max-height: 42vh; }

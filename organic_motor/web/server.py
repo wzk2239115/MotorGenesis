@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Iterable
@@ -86,6 +87,19 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
     def get_run(run_name: str) -> dict:
         run_dir = _find_run(run_name)
         return builder.run_summary(run_dir)
+
+    @app.get("/api/runs/{run_name}/startup")
+    def get_run_startup(run_name: str) -> dict:
+        """Multi-angle startup validation verdict, when the run has one."""
+        run_dir = _find_run(run_name)
+        for name in ("startup.json", "startup_boost/startup.json",
+                     "startup_quick/startup.json"):
+            candidate = run_dir / name
+            if not candidate.is_file():
+                candidate = run_dir.parent / name / "startup.json"
+            if candidate.is_file():
+                return json.loads(candidate.read_text(encoding="utf-8"))
+        raise HTTPException(status_code=404, detail="no startup validation for this run")
 
     @app.get("/api/runs/{run_name}/checkpoint/{step}/glb")
     def get_checkpoint_glb(
