@@ -17,11 +17,12 @@ class MotorConfig3D(MotorConfig):
     """
 
     shape: tuple[int, int, int] = (48, 48, 32)
-    box_size: tuple[float, float, float] = (0.120, 0.120, 0.030)
+    box_size: tuple[float, float, float] = (0.120, 0.120, 0.070)
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
     # A wider coarse-grid gap than the converged 2-D benchmark keeps the
     # mechanical separation representable at the default 48^2 cross-section.
     R_stator_inner: float = 0.030
+    stack_length: float = 0.060
     axial_airgap: float = 0.001
     excitation_mode: str = "terminal"
     terminal_voltage: float | None = None

@@ -92,16 +92,39 @@ Then build field-driven objects that sample these fields pointwise:
 
   FieldDrivenMagnets(cfg, thickness_field=B)        # magnet thickens where |B| high
   FieldDrivenStatorYoke(cfg, flux_field=B)          # yoke thickens where flux high
-  FieldDrivenCoolingJacket(cfg, heat_field=q)       # cooling wall thickens where hot
+  HelicalCoolingChannels(cfg, heat_field=q)         # helical coolant void, wall=f(heat)
+  FieldDrivenCoolingJacket(cfg, heat_field=q)       # gyroid wall thickens where hot
 
 You may also write your own field functions with FuncField:
 
   FuncField(lambda x, y, z: 0.003 + 0.001*np.abs(z))   # a custom spatial field
 
-The goal: each piece of "flesh" (magnet bone, iron yoke, copper vessel, cooling
-vessel) grows where the local physics demands it -- like a blood vessel whose
-radius follows local transport need.  Prefer field-driven objects over
-constant-parametric ones.
+# LEAP 71 design principles (the audit checklist)
+
+1. **Functional void first**: design where the coolant flows, where the air
+   gap is, where the magnet slurry goes -- THEN grow solid around those
+   voids.  HelicalCoolingChannels does this: it defines the fluid void as a
+   helical pipe, then grows the wall as shell(void, t).  Never make a big
+   solid block and drill holes in it.
+
+2. **Multi-functional structures**: one piece of material should do several
+   jobs.  RotorSleeve contains magnets against centrifugal force AND provides
+   a smooth air-gap surface AND transfers torque.  StatorSegmentation slits
+   reduce eddy losses AND act as cooling fins.
+
+3. **Axial variation**: nothing should be a uniform extrusion.  The magnets
+   have a barrel profile (thicker in the middle where flux peaks, thinner at
+   the ends where edge effects dominate).  The yoke thickness varies with
+   angle.  The cooling wall varies with heat.
+
+4. **Complexity must earn its existence**: if a complex structure does not
+   measurably improve the objective, simplify it.  Do not be organic for
+   the sake of being organic.
+
+5. **Manufacturing sequence**: the part must survive the full pipeline:
+   print -> remove powder -> fill magnet slurry -> align -> magnetize ->
+   seal -> assemble -> test.  Closed cavities need powder removal holes.
+   Magnet cavities need injection and vent ports.
 
 # Output format
 
@@ -132,9 +155,11 @@ rewards torque and penalises loss, temperature, and material volume.
 """
 
 
-BASELINE_CODE = '''# Field-driven surface-PM motor: every solid's geometry reads a physics field.
-# Magnet thickness follows air-gap |B|, the stator yoke thickens where flux
-# is high, and the cooling gyroid wall thickens where the winding runs hot.
+BASELINE_CODE = '''# LEAP 71 field-driven motor: functional voids first, then grow solid.
+# Magnet thickness follows air-gap |B| with a barrel axial profile.
+# Stator yoke thickens where flux is high.  Cooling is helical voids
+# whose walls thicken where the winding runs hot.  A rotor sleeve
+# contains the magnets; segmentation slits suppress eddy currents.
 def build(cfg):
     mf = MaterialField(cfg.shape, cfg.spacing, cfg.origin)
     B = airgap_B(cfg)      # reduced-physics flux density field
@@ -142,9 +167,11 @@ def build(cfg):
 
     mf = RotorCore(cfg).build(mf)
     mf = FieldDrivenMagnets(cfg, thickness_field=B).build(mf)
+    mf = RotorSleeve(cfg).build(mf)
     mf = FieldDrivenStatorYoke(cfg, flux_field=B).build(mf)
+    mf = StatorSegmentation(cfg).build(mf)
     mf = DistributedWinding(cfg).build(mf)
-    mf = FieldDrivenCoolingJacket(cfg, heat_field=q).build(mf)
+    mf = HelicalCoolingChannels(cfg, heat_field=q).build(mf)
     return mf
 
 def magnetization(cfg):

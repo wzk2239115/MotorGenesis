@@ -186,37 +186,41 @@ class FieldDrivenMagnets:
         pitch = 2.0 * np.pi / poles
         r0 = cfg.R_rotor_outer + 0.0002
         hz = cfg.rotor_half_length - 0.0002
-        cx, cy = cfg.center[0], cfg.center[1]
+        cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
 
-        # Sample the physics field at each pole's angular centre (z-averaged)
-        # to get a per-pole thickness.  This is the field->geometry step for
-        # the magnets: poles in higher-flux regions grow thicker.  The pole
-        # body itself reuses the proven annular_sector primitive.
         field = self.thickness_field
         if field is None:
             field = airgap_B(cfg)
         fmag = np.abs(field.data)
         fmax = max(float(fmag.max()), 1e-9)
-        # Thickness must stay >= ~1 voxel so the magnet registers at this grid
-        # resolution; it may poke slightly past R_stator_inner (the stator,
-        # added later with priority, carves the overlap back -- same as the
-        # baseline SurfaceMagnets).
-        sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+
         X, Y, Z, r, theta = _angles_of(cfg)
+        z_norm = np.clip((Z - cz + hz) / (2.0 * hz), 0.0, 1.0)
+        axial_factor = 0.4 + 0.6 * np.sin(np.pi * z_norm)
+
+        sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
         for p in range(poles):
             centre = p * pitch
             ang = np.mod(theta - centre + np.pi, 2 * np.pi) - np.pi
             in_pole = np.abs(ang) < pitch * self.pole_fraction * 0.5
             b_avg = float(fmag[in_pole].mean()) / fmax if in_pole.any() else 0.0
-            thickness = self.min_thickness + (self.max_thickness - self.min_thickness) * b_avg
-            r1 = r0 + thickness
+            base_t = self.min_thickness + (self.max_thickness - self.min_thickness) * b_avg
+            r1_z = r0 + base_t * axial_factor
+            rm = 0.5 * (r0 + r1_z)
+            dr = 0.5 * (r1_z - r0)
+            radial = np.abs(r - rm) - dr
+            axial = np.abs(Z - cz) - hz
+            cyl = np.maximum(radial, axial)
             a0 = centre - pitch * self.pole_fraction * 0.5
             a1 = centre + pitch * self.pole_fraction * 0.5
-            pole = from_implicit(
-                cfg.shape, cfg.spacing, cfg.origin,
-                annular_sector((cx, cy), r0, r1, a0, a1, hz),
-            )
-            sdf = np.minimum(sdf, pole.sdf)
+            c0, s0 = np.cos(a0), np.sin(a0)
+            c1, s1 = np.cos(a1), np.sin(a1)
+            px = X - cx
+            py = Y - cy
+            h0 = c0 * py - s0 * px
+            h1 = s1 * px - c1 * py
+            pole_sdf = np.maximum(cyl, np.maximum(-h0, -h1))
+            sdf = np.minimum(sdf, pole_sdf)
         from organic_motor.construct.field import SDFVoxelField
 
         mf.add(SDFVoxelField(sdf=sdf, spacing=cfg.spacing, origin=cfg.origin), "pm", priority=True)
@@ -426,6 +430,124 @@ class FieldDrivenCoolingJacket:
         return mf
 
 
+@dataclass
+class HelicalCoolingChannels:
+    """Spine-driven helical coolant voids with field-driven wall thickness.
+
+    LEAP 71 ``functional void first``: the coolant path is defined as a swept
+    void along a helical spine, then the channel wall grows around it as a
+    shell whose thickness follows the local Joule heat.  This replaces the
+    uniform gyroid with a self-organising cooling network that thickens where
+    the winding runs hot.
+
+    The wall is ``shell(void, t)`` where ``t = f(heat)`` -- the canonical
+    LEAP 71 ``Offset`` generation operation with a field-driven distance.
+    """
+
+    cfg: MotorConfig3D
+    n_channels: int = 4
+    n_turns: float = 3.0
+    channel_radius: float = 0.004
+    min_wall: float = 0.0015
+    max_wall: float = 0.0035
+    jacket_radius: float = 0.0  # default: R_design + 0.004
+    heat_field: object | None = None
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.fields_motor import joule_heat
+        from organic_motor.construct.field import SDFVoxelField
+
+        cfg = self.cfg
+        cz = cfg.center[2]
+        hz = cfg.stator_half_length - 0.001
+        R = self.jacket_radius or (cfg.R_design + 0.004)
+
+        X, Y, Z, r, theta = _angles_of(cfg)
+        z_norm = (Z - cz) / (2.0 * hz)
+        theta_helix = 2.0 * np.pi * self.n_turns * z_norm
+
+        d_theta_min = np.full_like(r, 1e9, dtype=np.float32)
+        for i in range(self.n_channels):
+            offset_i = 2.0 * np.pi * i / self.n_channels
+            dt = np.mod(theta - theta_helix - offset_i + np.pi, 2.0 * np.pi) - np.pi
+            d_theta_min = np.minimum(d_theta_min, np.abs(dt))
+
+        arc_dist = R * d_theta_min
+        radial_dist = r - R
+        dist_to_spine = np.sqrt(radial_dist ** 2 + arc_dist ** 2)
+        void_sdf = (dist_to_spine - self.channel_radius).astype(np.float32)
+
+        q = self.heat_field
+        if q is None:
+            q = joule_heat(cfg)
+        qmax = max(float(np.abs(q.data).max()), 1e-9)
+        qnorm = np.clip(np.abs(q.data) / qmax, 0.0, 1.0)
+        wall_t = (self.min_wall + (self.max_wall - self.min_wall) * qnorm).astype(np.float32)
+
+        wall_sdf = np.maximum(void_sdf - wall_t, -void_sdf)
+
+        mf.add(SDFVoxelField(sdf=wall_sdf, spacing=cfg.spacing, origin=cfg.origin), "iron", priority=True)
+        mf.add(SDFVoxelField(sdf=void_sdf, spacing=cfg.spacing, origin=cfg.origin), "air", priority=True)
+        return mf
+
+
+@dataclass
+class RotorSleeve:
+    """Thin retaining sleeve over surface magnets.
+
+    Multi-functional (LEAP 71 ``one material, many jobs``):
+    - Contains PM against centrifugal stress at speed
+    - Provides a smooth outer surface for the air gap
+    - Adds a small structural path for torque transfer
+    """
+
+    cfg: MotorConfig3D
+    thickness: float = 0.002
+    clearance: float = 0.0002
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        cfg = self.cfg
+        hz = cfg.rotor_half_length - 0.0001
+        r_inner = cfg.R_rotor_outer + 0.0045 + self.clearance
+        r_outer = r_inner + self.thickness
+        sleeve = _annulus(cfg, r_inner, r_outer, hz)
+        mf.add(sleeve, "iron", priority=True)
+        return mf
+
+
+@dataclass
+class StatorSegmentation:
+    """Radial slits through the stator yoke to suppress eddy currents.
+
+    The 3D equivalent of laminated silicon steel: thin angular cuts break the
+    circumferential current loop, so high-frequency AC losses are reduced.
+    This is the LEAP 71 ``manufacturing constraint drives geometry`` pattern
+    applied to electromagnetic efficiency.
+    """
+
+    cfg: MotorConfig3D
+    n_slits: int = 8
+    slit_width: float = 0.002
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        cfg = self.cfg
+        hz = cfg.stator_half_length
+        cx, cy = cfg.center[0], cfg.center[1]
+        r0 = cfg.R_stator_inner
+        r1 = cfg.R_design
+        pitch = 2.0 * np.pi / self.n_slits
+        span = self.slit_width / max(r0, 1e-6)
+        for i in range(self.n_slits):
+            centre = i * pitch + pitch * 0.5
+            slit = from_implicit(
+                cfg.shape, cfg.spacing, cfg.origin,
+                annular_sector((cx, cy), r0, r1,
+                               centre - span * 0.5, centre + span * 0.5, hz),
+            )
+            mf.subtract(slit, "iron")
+        return mf
+
+
 # ---------------------------------------------------------------------------
 # Whole motor assembly
 # ---------------------------------------------------------------------------
@@ -474,16 +596,21 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
     """A motor built entirely from field-driven computational objects.
 
     Every solid's local geometry reads a reduced-physics field pointwise:
-    magnet thickness follows the air-gap |B| demand, the stator yoke
-    thickens where flux is high, and the cooling gyroid wall thickens where
-    the winding runs hot.  This is the LEAP 71 ``radius = f(position,
-    physics)`` pattern applied across all four material ``tissues``.
+    magnet thickness follows the air-gap |B| demand with a barrel axial
+    profile, the stator yoke thickens where flux is high, the cooling
+    channels are helical voids with walls that thicken where the winding
+    runs hot, a rotor sleeve contains the magnets, and segmentation slits
+    suppress eddy currents.  This is the LEAP 71 ``radius = f(position,
+    physics)`` pattern applied across all material ``tissues``, with
+    functional voids first and multi-functional structures.
     """
     cfg = cfg or MotorConfig3D()
     return Motor(cfg, components=[
         RotorCore(cfg),
         FieldDrivenMagnets(cfg),
+        RotorSleeve(cfg),
         FieldDrivenStatorYoke(cfg),
+        StatorSegmentation(cfg),
         DistributedWinding(cfg),
-        FieldDrivenCoolingJacket(cfg),
+        HelicalCoolingChannels(cfg),
     ])

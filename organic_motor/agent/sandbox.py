@@ -46,8 +46,11 @@ from organic_motor.construct.objects import (
     FieldDrivenCoolingJacket,
     FieldDrivenMagnets,
     FieldDrivenStatorYoke,
+    HelicalCoolingChannels,
     RotorCore,
+    RotorSleeve,
     StatorCore,
+    StatorSegmentation,
     SurfaceMagnets,
     DistributedWinding,
 )
@@ -130,6 +133,9 @@ def make_namespace(cfg: MotorConfig3D) -> dict:
         "FieldDrivenMagnets": FieldDrivenMagnets,
         "FieldDrivenStatorYoke": FieldDrivenStatorYoke,
         "FieldDrivenCoolingJacket": FieldDrivenCoolingJacket,
+        "HelicalCoolingChannels": HelicalCoolingChannels,
+        "RotorSleeve": RotorSleeve,
+        "StatorSegmentation": StatorSegmentation,
     }
 
 
