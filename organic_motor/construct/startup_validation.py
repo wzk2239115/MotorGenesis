@@ -27,6 +27,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from organic_motor.config3d import MotorConfig3D
+from organic_motor.optimization.objective3d import forward3d_fields
 
 
 @dataclass
@@ -98,38 +99,42 @@ def run_single_startup(
     *,
     fields=None,
     phase_belts_override=None,
+    maps=None,
     min_speed_rad_s: float = 1.0,
     max_current_A: float = 200.0,
 ) -> StartupResult:
     """Run one startup simulation from a given initial rotor angle.
 
-    When ``fields`` (realized :class:`TopologyFields3D`) is supplied the
-    map solves run on the EXACT constructed geometry, bypassing
-    ``assemble3d`` -- which would delete surface magnets (it clips PM to
-    the rotor interior) and housing iron.  This keeps the transient's
-    torque map identical to what the critic scored.
+    ``maps`` (from :func:`compute_powered_maps`) lets all startup angles
+    share one set of field-map solves -- the maps are identical for every
+    initial angle, so solving them per angle wastes a factor of n_angles.
+    Without ``maps`` they are solved here (single-run convenience).
     """
-    from organic_motor.experiments.motor3d_powered import run_powered3d
-    from organic_motor.optimization.objective3d import forward3d, forward3d_fields
-
-    solver = None
-    if fields is not None:
-        realized = fields
-        belts = phase_belts_override
-
-        def solver(cfg_, _lo, _rl, mg, angles_, temp_):
-            return forward3d_fields(cfg_, realized, mg, angles_, belts)
-    elif phase_belts_override is not None:
-        belts = phase_belts_override
-
-        def solver(cfg_, lo, rl, mg, angles_, temp_):
-            return forward3d(cfg_, lo, rl, mg, angles_, temp_, phase_belts_override=belts)
-
-    data, _summary = run_powered3d(
-        cfg, logits, rotor_logits, magnetization,
-        angles_map, settings, initial_angle=initial_angle,
-        forward_solver=solver,
+    from organic_motor.experiments.motor3d_powered import (
+        compute_powered_maps,
+        run_powered_transient,
     )
+
+    if maps is None:
+        solver = None
+        if fields is not None:
+            realized = fields
+            belts = phase_belts_override
+
+            def solver(cfg_, _lo, _rl, mg, angles_, temp_):
+                return forward3d_fields(cfg_, realized, mg, angles_, belts)
+
+        maps = compute_powered_maps(
+            cfg, logits, rotor_logits, magnetization,
+            angles_map, settings, forward_solver=solver,
+        )
+    data = run_powered_transient(maps, settings, cfg, initial_angle)
+    return _evaluate_startup(cfg, data, initial_angle, settings,
+                             min_speed_rad_s, max_current_A)
+
+
+def _evaluate_startup(cfg, data, initial_angle, settings,
+                      min_speed_rad_s, max_current_A) -> StartupResult:
     speed = np.asarray(data["angular_velocity_rad_s"])
     torque = np.asarray(data["transient_torque_Nm"])
     currents = np.asarray(data["currents_A"])
@@ -252,7 +257,9 @@ def validate_startup(
     # Realize the constructed geometry ONCE: the transient's field maps must
     # run on the exact constructed fields (assemble3d would delete surface
     # magnets and clip the winding), and the netlist belts keep the map
-    # consistent with the actual winding topology.
+    # consistent with the actual winding topology.  The maps are solved
+    # ONCE and shared by every startup angle (they are angle-periodic and
+    # initial-angle independent).
     fields = None
     phase_belts_override = None
     if mf is not None:
@@ -262,12 +269,28 @@ def validate_startup(
             netlist = mf.metadata.get("winding_netlist")
             if netlist is not None:
                 phase_belts_override = jnp.asarray(netlist.phase_belts_3d(cfg))
+
+    from organic_motor.experiments.motor3d_powered import compute_powered_maps
+    solver = None
+    if fields is not None:
+        realized = fields
+        belts = phase_belts_override
+
+        def solver(cfg_, _lo, _rl, mg, angles_, temp_):
+            return forward3d_fields(cfg_, realized, mg, angles_, belts)
+
+    maps = compute_powered_maps(
+        cfg, logits, rotor_logits, magnetization,
+        map_angles, settings, forward_solver=solver,
+        include_mechanics=False,
+    )
     for angle in initial_angles:
         sr = run_single_startup(
             cfg, logits, rotor_logits, magnetization,
             float(angle), settings, map_angles,
             fields=fields,
             phase_belts_override=phase_belts_override,
+            maps=maps,
             min_speed_rad_s=min_speed_rad_s, max_current_A=max_current_A,
         )
         result.results.append(sr)

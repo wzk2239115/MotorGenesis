@@ -112,13 +112,31 @@ The critic now checks geometric quality beyond torque/loss. You will see:
   - copper_components: connected copper count. 1 = SHORTED RING (bad).
     Keep coils distinct: wire_radius < layer_spacing / 2.
   - air_gap_iron_bridge: True if iron crosses the air gap (FATAL).
-    Always call FunctionalVoids(cfg).build(mf) LAST to protect the gap.
-  - shaft_rotor_merge: True if shaft and rotor iron are connected (bad).
-    RotorCore clearance must be > 2x the display voxel size.
-  - housing_open_area_ratio: fraction of housing that is open windows.
-    Aim for > 0.3 so the interior is visible.
-  - end_face_occlusion: fraction of front face blocked by solid iron.
-    Segment end rings with angular windows, don't leave full annuli.
+    Always call FunctionalVoids(cfg).build(mf) to protect the gap.
+  - floating_islands: structural metal tracing to NO anchor.  Every piece
+    of iron/PM must connect (through hubs, ribs, walls) to the shaft
+    (rotor side) or the housing ring (stator side).  StructuralContinuity
+    deletes unanchored metal automatically -- call it LAST.
+  - rotor_anchored / stator_anchored: the two structural graph roots.
+  - min_neck_mm: 5th-percentile local thickness of anchored metal.
+    Thin necks snap: grow junctions with overlap, not tangent contact.
+  - trapped_voids: enclosed coolant pockets (powder-removal failure).
+  - housing_open_area_ratio / end_face_occlusion: visibility gates.
+
+# Connectivity doctrine (four graphs, not one)
+
+Do NOT use a single "everything connected" rule.  A motor deliberately
+has DIFFERENT connectivity per network:
+  - STRUCTURAL: grow load-bearing metal FROM anchors (shaft, hub, housing
+    ring, flange) with deliberate overlap + voxel union.  Connectivity is
+    a growth invariant, never an afterthought check.  Floating metal is
+    deleted by StructuralContinuity.
+  - MAGNETIC: flux paths want continuity, but segmentation slits are
+    deliberate (eddy suppression) -- no blanket rule.
+  - ELECTRICAL: phases follow the coil netlist exactly; phases that
+    should be isolated must never geometrically merge.
+  - COOLANT: voids must run inlet -> outlet with no trapped pockets and
+    a pressure-rated wall to all solids.
 
 # Winding electrical topology
 
@@ -187,22 +205,23 @@ Improve the design. Keep what worked, fix what failed. Reply with ONE complete
 has PM). Target: lower `obj` (objective, lower is better). The objective
 rewards torque and penalises loss, temperature, and material volume.
 
-ALWAYS call FunctionalVoids(cfg).build(mf) LAST to protect the air gap.
+ALWAYS call FunctionalVoids(cfg).build(mf) then StructuralContinuity(cfg).build(mf)
+LAST: the air gap stays clear and unanchored metal is deleted.
 ALWAYS set wire_radius=0 (auto) or wire_radius < layer_spacing/2 to avoid
 copper layers fusing into a shorted ring.
-ALWAYS segment housing end rings with angular windows (MotorHousing already does this).
-ALWAYS keep RotorCore clearance > 2 display voxels so shaft and rotor don't merge.
+ALWAYS grow new structural features from anchor surfaces with deliberate
+overlap (hub spokes into the rotor body, blades into the rims), never
+tangent contact.
 """
 
 
-BASELINE_CODE = '''# LEAP 71 field-driven motor: functional voids first, then grow solid.
-# Magnet thickness follows air-gap |B| with a barrel axial profile.
-# Stator yoke thickens where flux is high.  Cooling is helical voids
-# whose walls thicken where the winding runs hot.  A rotor sleeve
-# contains the magnets; segmentation slits suppress eddy currents.
-# Real 3D windings have slot conductors and end turns with per-phase
-# coil netlist.  Shaft, bearings and housing complete the mechanical
-# assembly.  FunctionalVoids protect the air gap as a final pass.
+BASELINE_CODE = '''# LEAP 71 field-driven motor: anchors first, functional voids, then grow.
+# Magnet thickness follows air-gap |B| with a barrel axial profile and a
+# helical skew (cogging cancellation).  Stator yoke thickens where flux
+# is high.  Cooling is helical voids with heat-driven walls.  The winding
+# is a real three-phase network: phase-separated radial layers, multi-
+# strand slot bundles.  Hub spokes anchor rotor->shaft.  Structural-
+# Continuity deletes any floating metal as the final invariant.
 def build(cfg):
     mf = MaterialField(cfg.shape, cfg.spacing, cfg.origin)
     B = airgap_B(cfg)
@@ -218,8 +237,9 @@ def build(cfg):
     mf = MotorHousing(cfg).build(mf)
     mf = HelicalCoolingChannels(cfg, heat_field=q).build(mf)
     mf = FunctionalVoids(cfg).build(mf)
+    mf = StructuralContinuity(cfg).build(mf)
     return mf
 
 def magnetization(cfg):
-    return SurfaceMagnets(cfg).magnetization()
+    return FieldDrivenMagnets(cfg).magnetization()
 '''

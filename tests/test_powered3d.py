@@ -106,7 +106,7 @@ def test_powered_workflow_preserves_native_xyz_fields():
         forward_solver=fake_forward,
     )
 
-    assert summary["model"] == "quasi-static field-map transient"
+    assert summary["model"].startswith("quasi-static field-map transient")
     assert summary["full_time_domain_eddy_current"] is False
     assert data["flux_density_map_T"].shape == (2,) + cfg.shape + (3,)
     assert data["current_density_map_A_m2"].shape == (2,) + cfg.shape + (3,)

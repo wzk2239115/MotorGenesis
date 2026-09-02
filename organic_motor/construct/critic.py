@@ -83,8 +83,12 @@ def score_fields(
     metrics["obj"] = float(_obj)
     if geometry_mf is not None and geometry_cfg is not None:
         geom = compute_geometry_metrics(geometry_mf, geometry_cfg)
+        from organic_motor.construct.connectivity import connectivity_report
+        geom.update(connectivity_report(geometry_mf, geometry_cfg))
     else:
         geom = compute_geometry_metrics(mf, cfg)
+        from organic_motor.construct.connectivity import connectivity_report
+        geom.update(connectivity_report(mf, cfg))
     metrics.update(geom)
     if netlist is not None:
         metrics["winding_netlist"] = netlist.summary()

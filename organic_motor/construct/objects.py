@@ -102,14 +102,17 @@ class SurfaceMagnets:
     """Surface-mounted PM poles on the rotor outer radius.
 
     ``pole_fraction`` is the fraction of one pole pitch each magnet occupies;
-    ``thickness`` is the radial magnet thickness.  Magnetisation alternates
-    radially between poles; :meth:`magnetization` returns the per-voxel
-    magnetisation vector the critic needs.
+    ``thickness`` is the radial magnet thickness.  ``skew_angle`` twists the
+    pole pattern helically over the stack (one slot pitch by default) --
+    the classical skew that cancels cogging torque in a slotted stator.
+    Magnetisation alternates radially between poles; :meth:`magnetization`
+    returns the per-voxel magnetisation vector the critic needs.
     """
 
     cfg: MotorConfig3D
     thickness: float = 0.0035
     pole_fraction: float = 0.72
+    skew_angle: float = 0.5236  # one slot pitch (30 deg) over the stack
 
     def _pole_specs(self):
         cfg = self.cfg
@@ -128,29 +131,46 @@ class SurfaceMagnets:
         return specs
 
     def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.field import SDFVoxelField
+
         cfg = self.cfg
+        poles = 2 * cfg.pole_pairs
+        pitch = 2.0 * np.pi / poles
         hz = cfg.rotor_half_length - 0.0002
-        for a0, a1, r0, r1, _sign, _centre in self._pole_specs():
-            pole = from_implicit(
-                cfg.shape, cfg.spacing, cfg.origin,
-                annular_sector((cfg.center[0], cfg.center[1]), r0, r1, a0, a1, hz),
-            )
-            mf.add(pole, "pm", priority=True)
+        cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
+        _X, _Y, Z, r, theta = _angles_of(cfg)
+        z_norm = (Z - cz) / max(2.0 * hz, 1e-9)
+        half_span = pitch * self.pole_fraction * 0.5
+
+        sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+        r0 = cfg.R_rotor_outer + 0.0002
+        r1 = r0 + self.thickness
+        for p in range(poles):
+            centre = p * pitch + self.skew_angle * z_norm
+            ang = np.mod(theta - centre + np.pi, 2 * np.pi) - np.pi
+            band = np.abs(ang) - half_span
+            radial = np.maximum(r - r1, r0 - r)
+            pole = np.maximum(np.maximum(band, radial), axial)
+            sdf = np.minimum(sdf, pole.astype(np.float32))
+        mf.add(SDFVoxelField(sdf=sdf, spacing=cfg.spacing, origin=cfg.origin), "pm", priority=True)
         return mf
 
     def magnetization(self) -> np.ndarray:
         """Per-voxel unit magnetisation vector, alternating radially per pole.
 
         Radial outward for even poles, inward for odd -- the canonical
-        surface-PM magnetisation pattern.  ``normalized_magnetization3d``
-        multiplies this by ``rho_pm``, so the direction is only used where
-        magnet material is actually present.
+        surface-PM magnetisation pattern, following the same helical skew
+        as the geometry so poles and magnetisation always agree.
         """
         cfg = self.cfg
-        _X, _Y, _Z, _r, angle = _angles_of(cfg)
+        _X, _Y, Z, _r, angle = _angles_of(cfg)
+        cz = cfg.center[2]
         poles = 2 * cfg.pole_pairs
         pitch = 2.0 * np.pi / poles
-        pole_index = np.rint(angle / pitch)
+        hz = cfg.rotor_half_length
+        z_norm = (Z - cz) / max(2.0 * hz, 1e-9)
+        skewed = angle - self.skew_angle * z_norm
+        pole_index = np.rint(skewed / pitch)
         sign = np.where((pole_index.astype(int) % 2) == 0, 1.0, -1.0)
         mx = sign * np.cos(angle)
         my = sign * np.sin(angle)
@@ -175,6 +195,7 @@ class FieldDrivenMagnets:
     min_thickness: float = 0.0025
     max_thickness: float = 0.0032
     pole_fraction: float = 0.72
+    skew_angle: float = 0.5236  # helical pole twist over the stack (rad)
     thickness_field: object | None = None  # ScalarField; default = airgap_B
 
     def build(self, mf: MaterialField) -> MaterialField:
@@ -197,10 +218,11 @@ class FieldDrivenMagnets:
         X, Y, Z, r, theta = _angles_of(cfg)
         z_norm = np.clip((Z - cz + hz) / (2.0 * hz), 0.0, 1.0)
         axial_factor = 0.4 + 0.6 * np.sin(np.pi * z_norm)
+        z_skew = (Z - cz) / max(cfg.rotor_half_length, 1e-9)
 
         sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
         for p in range(poles):
-            centre = p * pitch
+            centre = p * pitch + self.skew_angle * z_skew
             ang = np.mod(theta - centre + np.pi, 2 * np.pi) - np.pi
             in_pole = np.abs(ang) < pitch * self.pole_fraction * 0.5
             b_avg = float(fmag[in_pole].mean()) / fmax if in_pole.any() else 0.0
@@ -210,24 +232,16 @@ class FieldDrivenMagnets:
             dr = 0.5 * (r1_z - r0)
             radial = np.abs(r - rm) - dr
             axial = np.abs(Z - cz) - hz
-            cyl = np.maximum(radial, axial)
-            a0 = centre - pitch * self.pole_fraction * 0.5
-            a1 = centre + pitch * self.pole_fraction * 0.5
-            c0, s0 = np.cos(a0), np.sin(a0)
-            c1, s1 = np.cos(a1), np.sin(a1)
-            px = X - cx
-            py = Y - cy
-            h0 = c0 * py - s0 * px
-            h1 = s1 * px - c1 * py
-            pole_sdf = np.maximum(cyl, np.maximum(-h0, -h1))
-            sdf = np.minimum(sdf, pole_sdf)
+            band = np.abs(ang) - pitch * self.pole_fraction * 0.5
+            pole_sdf = np.maximum(np.maximum(radial, axial), band)
+            sdf = np.minimum(sdf, pole_sdf.astype(np.float32))
         from organic_motor.construct.field import SDFVoxelField
 
         mf.add(SDFVoxelField(sdf=sdf, spacing=cfg.spacing, origin=cfg.origin), "pm", priority=True)
         return mf
 
     def magnetization(self) -> np.ndarray:
-        return SurfaceMagnets(self.cfg).magnetization()
+        return SurfaceMagnets(self.cfg, skew_angle=self.skew_angle).magnetization()
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +382,7 @@ class Winding3D:
     n_slots: int = 12
     coil_span: int = 3
     n_layers: int = 3  # one radial layer per phase (phase insulation by radius)
+    strands_per_slot: int = 3  # touching wires per slot: raises slot fill ~3x
     wire_radius: float = 0.0  # 0 = auto from layer spacing (35% fill)
     end_turn_rise: float = 0.0005
     end_turn_gap: float = 0.001  # kept for API compat
@@ -397,12 +412,14 @@ class Winding3D:
         netlist = CoilNetlist(
             n_slots=self.n_slots, pole_pairs=cfg.pole_pairs,
             n_phases=3, coil_span=self.coil_span,
-            n_layers=self.n_layers, turns_per_coil=1, connection="star",
+            n_layers=self.n_layers, turns_per_coil=self.strands_per_slot,
+            connection="star",
         )
         phase_of_slot = netlist.slot_phase_assignment()
 
         X, Y, Z, r, theta = _angles_of(cfg)
         copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+        S = max(1, self.strands_per_slot)
 
         for coil in range(self.n_slots):
             slot_a = coil
@@ -414,31 +431,38 @@ class Winding3D:
 
             for layer in self._slot_layers(phase):
                 r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
+                # Strands sit side by side across the slot, touching (same
+                # phase, so contact is fine): a form-wound conductor bundle.
+                d_theta_strand = 2.0 * wr / r_mid
 
-                d_ta = np.mod(theta - theta_a + np.pi, 2 * np.pi) - np.pi
-                d_tb = np.mod(theta - theta_b + np.pi, 2 * np.pi) - np.pi
-                radial_a = np.sqrt((r - r_mid) ** 2 + (r_mid * d_ta) ** 2)
-                radial_b = np.sqrt((r - r_mid) ** 2 + (r_mid * d_tb) ** 2)
-                axial_in = np.maximum(np.abs(Z - cz) - hz, 0.0)
-                copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_a ** 2 + axial_in ** 2) - wr)
-                copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_b ** 2 + axial_in ** 2) - wr)
+                for strand in range(S):
+                    off = (strand - 0.5 * (S - 1)) * d_theta_strand
+                    theta_as = theta_a + off
+                    theta_bs = theta_b + off
 
-                for sign in (+1, -1):
-                    z_base = cz + sign * hz
-                    # Arc sample spacing <= 1.2*wire radius so adjacent bead
-                    # capsules overlap and the end turn stays continuous even
-                    # for thin wires (a fixed 16 samples gaps at small wr).
-                    arc_length = abs(d_ab) * r_mid + self.end_turn_rise
-                    n_arc = max(16, int(np.ceil(arc_length / (1.2 * wr))))
-                    for si in range(n_arc):
-                        s = (si + 0.5) / n_arc
-                        theta_s = theta_a + s * d_ab
-                        z_s = z_base + sign * self.end_turn_rise * np.sin(np.pi * s)
-                        d_ts = np.mod(theta - theta_s + np.pi, 2 * np.pi) - np.pi
-                        dist_s = np.sqrt(
-                            (r - r_mid) ** 2 + (Z - z_s) ** 2 + (r_mid * d_ts) ** 2
-                        )
-                        copper_sdf = np.minimum(copper_sdf, dist_s.astype(np.float32) - wr)
+                    d_ta = np.mod(theta - theta_as + np.pi, 2 * np.pi) - np.pi
+                    d_tb = np.mod(theta - theta_bs + np.pi, 2 * np.pi) - np.pi
+                    radial_a = np.sqrt((r - r_mid) ** 2 + (r_mid * d_ta) ** 2)
+                    radial_b = np.sqrt((r - r_mid) ** 2 + (r_mid * d_tb) ** 2)
+                    axial_in = np.maximum(np.abs(Z - cz) - hz, 0.0)
+                    copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_a ** 2 + axial_in ** 2) - wr)
+                    copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_b ** 2 + axial_in ** 2) - wr)
+
+                    for sign in (+1, -1):
+                        z_base = cz + sign * hz
+                        # Arc sample spacing <= 1.2*wire radius so adjacent bead
+                        # capsules overlap and the end turn stays continuous.
+                        arc_length = abs(d_ab) * r_mid + self.end_turn_rise
+                        n_arc = max(16, int(np.ceil(arc_length / (1.2 * wr))))
+                        for si in range(n_arc):
+                            s = (si + 0.5) / n_arc
+                            theta_s = theta_as + s * d_ab
+                            z_s = z_base + sign * self.end_turn_rise * np.sin(np.pi * s)
+                            d_ts = np.mod(theta - theta_s + np.pi, 2 * np.pi) - np.pi
+                            dist_s = np.sqrt(
+                                (r - r_mid) ** 2 + (Z - z_s) ** 2 + (r_mid * d_ts) ** 2
+                            )
+                            copper_sdf = np.minimum(copper_sdf, dist_s.astype(np.float32) - wr)
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin), "copper", priority=True)
         mf.metadata["winding_netlist"] = netlist
@@ -656,6 +680,8 @@ class ShaftAndBearings:
     end_cap_thickness: float = 0.003
     n_cap_spokes: int = 6
     spoke_fraction: float = 0.35
+    n_hub_spokes: int = 6
+    hub_spoke_width: float = 0.004
 
     def build(self, mf: MaterialField) -> MaterialField:
         from organic_motor.construct.field import SDFVoxelField
@@ -671,12 +697,34 @@ class ShaftAndBearings:
         shaft_half = hz + self.shaft_extension
         shaft_sdf = np.maximum(r - r_shaft, np.abs(Z - cz) - shaft_half)
 
+        # Hub spokes: the structural anchor that ties the rotor iron to the
+        # shaft (rotor -> hub -> shaft load path).  A web of spokes at each
+        # rotor end bridges the bore clearance with deliberate overlap into
+        # both the shaft and the rotor body -- connectivity by construction,
+        # not by contact.
+        r_rotor_bore = cfg.R_shaft + 0.004
+        parts = [shaft_sdf]
+        hub_z = cfg.rotor_half_length - 0.002
+        spoke_pitch = 2.0 * np.pi / self.n_hub_spokes
+        spoke_half_arc = 0.5 * self.hub_spoke_width / max(r_rotor_bore, 1e-6)
+        for sign in (+1, -1):
+            z_h = cz + sign * (hub_z - 0.5 * self.hub_spoke_width)
+            axial_h = np.abs(Z - z_h) - 0.5 * self.hub_spoke_width
+            radial_bound = r - (r_rotor_bore + 0.002)  # overlap into rotor iron
+            web = np.full(cfg.shape, 1e9, dtype=np.float32)
+            for i in range(self.n_hub_spokes):
+                centre = i * spoke_pitch
+                d_ang = np.mod(theta - centre + np.pi, 2 * np.pi) - np.pi
+                # angular band whose arc-width equals the spoke width
+                band = np.abs(d_ang) * r - 0.5 * self.hub_spoke_width
+                web = np.minimum(web, np.maximum(np.maximum(band, axial_h), radial_bound))
+            parts.append(web.astype(np.float32))
+
         bearing_half = self.bearing_width * 0.5
         cap_half = self.end_cap_thickness * 0.5
-        spoke_pitch = 2.0 * np.pi / self.n_cap_spokes
-        window_span = spoke_pitch * (1.0 - self.spoke_fraction)
+        spoke_pitch_cap = 2.0 * np.pi / self.n_cap_spokes
+        window_span = spoke_pitch_cap * (1.0 - self.spoke_fraction)
 
-        parts = [shaft_sdf]
         for sign in (+1, -1):
             # Bearing sits fully beyond the rotor end so it never bridges
             # shaft and rotor iron (rotor ends at rotor_half_length).
@@ -694,7 +742,7 @@ class ShaftAndBearings:
             cap_sdf = np.maximum(cap_outer, -cap_hole)
 
             for i in range(self.n_cap_spokes):
-                window_centre = i * spoke_pitch + spoke_pitch * 0.5
+                window_centre = i * spoke_pitch_cap + spoke_pitch_cap * 0.5
                 d_ang = np.mod(theta - window_centre + np.pi, 2 * np.pi) - np.pi
                 w_axial = np.abs(Z - z_c) - (cap_half + 0.001)
                 w_radial = np.maximum(r - r_cap, r_bearing - r)
@@ -835,6 +883,28 @@ class FunctionalVoids:
         return mf
 
 
+@dataclass
+class StructuralContinuity:
+    """Final pass: enforce the structural connectivity graph.
+
+    LEAP 71 doctrine: connectivity belongs in the GROWTH rules (features
+    grow from anchors with deliberate overlap), and this pass is the
+    safety net that makes the invariant hold regardless of what came
+    before -- every iron/PM component must trace back to the shaft
+    (rotor side) or the housing ring (stator side).  Floating islands
+    are deleted, exactly like disconnected metal would be rejected in
+    manufacture.  Copper is untouched: its connectivity belongs to the
+    ELECTRICAL graph (phase networks), not this one.
+    """
+
+    cfg: MotorConfig3D
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.connectivity import prune_floating_islands
+
+        return prune_floating_islands(mf, self.cfg)
+
+
 # ---------------------------------------------------------------------------
 # Whole motor assembly
 # ---------------------------------------------------------------------------
@@ -884,11 +954,14 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
 
     Every solid's local geometry reads a reduced-physics field pointwise:
     magnet thickness follows the air-gap |B| demand with a barrel axial
-    profile, the stator yoke thickens where flux is high, the cooling
-    channels are helical voids with walls that thicken where the winding
-    runs hot, a rotor sleeve contains the magnets, and segmentation slits
-    suppress eddy currents.  Real 3D windings have slot conductors and end
-    turns.  Shaft, bearings and housing complete the mechanical assembly.
+    profile and a helical skew that cancels cogging, the stator yoke
+    thickens where flux is high, the cooling channels are helical voids
+    with walls that thicken where the winding runs hot, a rotor sleeve
+    contains the magnets, and segmentation slits suppress eddy currents.
+    The winding is a three-phase network with phase-separated radial
+    layers and multi-strand slot bundles.  Hub spokes anchor the rotor
+    to the shaft; the structural-continuity pass deletes any floating
+    metal as the final invariant.
     """
     cfg = cfg or MotorConfig3D()
     return Motor(cfg, components=[
@@ -902,4 +975,5 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
         MotorHousing(cfg),
         HelicalCoolingChannels(cfg),
         FunctionalVoids(cfg),
+        StructuralContinuity(cfg),
     ])

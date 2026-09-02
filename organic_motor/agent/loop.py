@@ -60,8 +60,9 @@ def _metrics_table(metrics: dict) -> str:
         "vol_iron", "vol_copper", "vol_pm",
         "maxwell_residual", "thermal_residual", "electric_residual",
         "copper_components", "copper_min_gap_mm",
-        "air_gap_iron_bridge", "shaft_rotor_merge",
-        "housing_open_area_ratio", "end_face_occlusion",
+        "air_gap_iron_bridge", "floating_islands",
+        "rotor_anchored", "stator_anchored", "min_neck_mm",
+        "trapped_voids", "housing_open_area_ratio", "end_face_occlusion",
     )
     lines = []
     for k in keys:
@@ -106,10 +107,22 @@ def _diagnosis(metrics: dict, error: str | None) -> str:
         parts.append(f"Copper has {cc} components -- winding is fragmented. Check end-turn connectivity.")
     if metrics.get("air_gap_iron_bridge", False):
         parts.append("WARNING: iron bridges the air gap -- rotor and stator are electrically/magnetically shorted. "
-                     "Ensure FunctionalVoids is called last to protect the gap.")
-    if metrics.get("shaft_rotor_merge", False):
-        parts.append("WARNING: shaft and rotor iron are merged -- no air gap between shaft and rotor bore. "
-                     "Increase RotorCore clearance.")
+                     "Ensure FunctionalVoids is called to protect the gap.")
+    fi = metrics.get("floating_islands", 0)
+    if fi and fi > 0:
+        parts.append(f"WARNING: {fi} floating structural islands -- metal with no path to shaft or housing. "
+                     "Grow features from anchors with overlap; StructuralContinuity deletes the rest.")
+    if not metrics.get("rotor_anchored", True):
+        parts.append("WARNING: rotor is not anchored to the shaft -- no torque path. Add hub spokes.")
+    if not metrics.get("stator_anchored", True):
+        parts.append("WARNING: stator is not anchored to the housing -- add connecting walls/rim overlap.")
+    neck = metrics.get("min_neck_mm", 0.0)
+    if 0 < neck < 0.8:
+        parts.append(f"Thin structural necks ({neck:.2f}mm) -- junctions may snap; "
+                     "grow overlaps instead of tangent contact.")
+    tv = metrics.get("trapped_voids", 0)
+    if tv and tv > 0:
+        parts.append(f"{tv} trapped coolant voids -- powder-removal/fill failure; vent them.")
     hoa = metrics.get("housing_open_area_ratio", 0.0)
     if hoa < 0.1:
         parts.append("Housing is nearly solid -- no windows visible. Add angular cutouts to the housing shell.")

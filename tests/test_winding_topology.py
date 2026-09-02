@@ -90,13 +90,22 @@ class TestGeometryGates:
     def metrics(self):
         cfg = _small_cfg()
         mf = field_driven_motor(cfg).build()
-        return compute_geometry_metrics(mf, cfg)
+        geom = compute_geometry_metrics(mf, cfg)
+        from organic_motor.construct.connectivity import connectivity_report
+        geom.update(connectivity_report(mf, cfg))
+        return geom
 
     def test_no_air_gap_bridge(self, metrics):
         assert metrics["air_gap_iron_bridge"] is False
 
-    def test_shaft_rotor_separated(self, metrics):
-        assert metrics["shaft_rotor_merge"] is False
+    def test_rotor_anchored_to_shaft(self, metrics):
+        # The hub spokes are the structural load path rotor -> shaft;
+        # shaft_rotor_merge is now EXPECTED (deliberate anchor), and the
+        # separation guarantee lives in the air-gap check above.
+        assert metrics["rotor_anchored"] is True
+
+    def test_no_floating_islands(self, metrics):
+        assert metrics["floating_islands"] == 0
 
     def test_copper_not_single_ring(self, metrics):
         # 1 means every phase shorted together into one copper cylinder.

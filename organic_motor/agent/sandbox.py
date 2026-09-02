@@ -54,6 +54,7 @@ from organic_motor.construct.objects import (
     ShaftAndBearings,
     StatorCore,
     StatorSegmentation,
+    StructuralContinuity,
     SurfaceMagnets,
     DistributedWinding,
     Winding3D,
@@ -146,6 +147,7 @@ def make_namespace(cfg: MotorConfig3D) -> dict:
         "Winding3D": Winding3D,
         "FunctionalVoids": FunctionalVoids,
         "CoilNetlist": CoilNetlist,
+        "StructuralContinuity": StructuralContinuity,
     }
 
 
