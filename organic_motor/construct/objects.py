@@ -172,8 +172,8 @@ class FieldDrivenMagnets:
 
     cfg: MotorConfig3D
     base_thickness: float = 0.0035
-    min_thickness: float = 0.0030
-    max_thickness: float = 0.0045
+    min_thickness: float = 0.0025
+    max_thickness: float = 0.0032
     pole_fraction: float = 0.72
     thickness_field: object | None = None  # ScalarField; default = airgap_B
 
@@ -562,14 +562,16 @@ class RotorSleeve:
     """
 
     cfg: MotorConfig3D
-    thickness: float = 0.002
+    thickness: float = 0.001
     clearance: float = 0.0002
 
     def build(self, mf: MaterialField) -> MaterialField:
         cfg = self.cfg
         hz = cfg.rotor_half_length - 0.0001
-        r_inner = cfg.R_rotor_outer + 0.0045 + self.clearance
-        r_outer = r_inner + self.thickness
+        r_inner = cfg.R_rotor_outer + 0.0032 + self.clearance
+        r_outer = min(r_inner + self.thickness, cfg.R_stator_inner - 0.0005)
+        if r_outer <= r_inner:
+            return mf
         sleeve = _annulus(cfg, r_inner, r_outer, hz)
         mf.add(sleeve, "iron", priority=True)
         return mf
@@ -623,6 +625,8 @@ class ShaftAndBearings:
     bearing_width: float = 0.004
     bearing_radius: float = 0.0
     end_cap_thickness: float = 0.003
+    n_cap_spokes: int = 6
+    spoke_fraction: float = 0.35
 
     def build(self, mf: MaterialField) -> MaterialField:
         from organic_motor.construct.field import SDFVoxelField
@@ -634,12 +638,15 @@ class ShaftAndBearings:
         r_bearing = self.bearing_radius or (r_shaft + 0.006)
         r_cap = cfg.R_design + 0.006
 
-        X, Y, Z, r, _theta = _angles_of(cfg)
+        X, Y, Z, r, theta = _angles_of(cfg)
         shaft_half = hz + self.shaft_extension
         shaft_sdf = np.maximum(r - r_shaft, np.abs(Z - cz) - shaft_half)
 
         bearing_half = self.bearing_width * 0.5
         cap_half = self.end_cap_thickness * 0.5
+        spoke_pitch = 2.0 * np.pi / self.n_cap_spokes
+        window_span = spoke_pitch * (1.0 - self.spoke_fraction)
+
         parts = [shaft_sdf]
         for sign in (+1, -1):
             z_b = cz + sign * (hz + bearing_half)
@@ -652,7 +659,17 @@ class ShaftAndBearings:
             axial_c = np.abs(Z - z_c) - cap_half
             cap_outer = np.maximum(r - r_cap, axial_c)
             cap_hole = np.maximum(r - (r_bearing + 0.001), axial_c)
-            parts.append(np.maximum(cap_outer, -cap_hole))
+            cap_sdf = np.maximum(cap_outer, -cap_hole)
+
+            for i in range(self.n_cap_spokes):
+                window_centre = i * spoke_pitch + spoke_pitch * 0.5
+                d_ang = np.mod(theta - window_centre + np.pi, 2 * np.pi) - np.pi
+                w_axial = np.abs(Z - z_c) - (cap_half + 0.001)
+                w_radial = np.maximum(r - r_cap, r_bearing - r)
+                w_angular = np.abs(d_ang) - window_span * 0.5
+                window_sdf = np.maximum(w_radial, np.maximum(w_angular, w_axial))
+                cap_sdf = np.maximum(cap_sdf, -window_sdf)
+            parts.append(cap_sdf)
 
         combined = parts[0]
         for p in parts[1:]:
@@ -742,6 +759,38 @@ class MotorHousing:
         return mf
 
 
+@dataclass
+class FunctionalVoids:
+    """Protected functional voids subtracted from ALL materials last.
+
+    The radial air gap between rotor and stator must never be bridged.
+    This final pass subtracts the gap annulus from every material in the
+    field, ensuring that later additions cannot fill it.  This is the
+    LEAP 71 ``functional void first`` principle enforced as a guaranteed
+    final pass — the voids are defined last but are absolute.
+    """
+
+    cfg: MotorConfig3D
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.field import SDFVoxelField
+
+        cfg = self.cfg
+        cz = cfg.center[2]
+        hz = cfg.stator_half_length
+
+        _X, _Y, Z, r, _theta = _angles_of(cfg)
+
+        radial_gap = np.maximum(r - cfg.R_stator_inner, cfg.R_rotor_outer - r)
+        axial_limit = np.abs(Z - cz) - hz
+        gap_sdf = np.maximum(radial_gap, axial_limit)
+
+        mf.add(SDFVoxelField(sdf=gap_sdf.astype(np.float32),
+                             spacing=cfg.spacing, origin=cfg.origin),
+               "air", priority=True)
+        return mf
+
+
 # ---------------------------------------------------------------------------
 # Whole motor assembly
 # ---------------------------------------------------------------------------
@@ -806,6 +855,7 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
         FieldDrivenStatorYoke(cfg),
         StatorSegmentation(cfg),
         Winding3D(cfg),
-        HelicalCoolingChannels(cfg),
         MotorHousing(cfg),
+        HelicalCoolingChannels(cfg),
+        FunctionalVoids(cfg),
     ])
