@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
 const $ = (id) => document.getElementById(id);
 const status = (msg, cls = "") => {
@@ -10,43 +11,73 @@ const status = (msg, cls = "") => {
 };
 
 // ---------------------------------------------------------------------------
-// Three.js scene
+// Three.js scene — product-level PBR rendering
 // ---------------------------------------------------------------------------
 const viewport = $("viewport");
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(viewport.clientWidth, viewport.clientHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 viewport.appendChild(renderer.domElement);
 
+// Studio environment for realistic metal reflections.
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05090d);
-scene.fog = new THREE.FogExp2(0x05090d, 2.2);
+scene.background = new THREE.Color(0x1a1d23);
+scene.environment = envTexture;
+scene.fog = new THREE.FogExp2(0x1a1d23, 3.5);
 
 const camera = new THREE.PerspectiveCamera(
-  42, viewport.clientWidth / viewport.clientHeight, 0.0005, 5
+  38, viewport.clientWidth / viewport.clientHeight, 0.0005, 5
 );
-camera.position.set(0.09, 0.07, 0.11);
+camera.position.set(0.09, 0.06, 0.12);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.target.set(0, 0, 0);
 
-// Lighting tuned for metallic motor parts.
-const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x0a0f14, 0.55);
-scene.add(hemi);
-const key = new THREE.DirectionalLight(0xfff2e0, 1.15);
-key.position.set(0.12, 0.16, 0.2);
+// Key + fill + rim lighting for metallic surfaces.
+const key = new THREE.DirectionalLight(0xfff5e8, 1.8);
+key.position.set(0.15, 0.18, 0.12);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.02;
+key.shadow.camera.far = 0.5;
+key.shadow.camera.left = -0.08;
+key.shadow.camera.right = 0.08;
+key.shadow.camera.top = 0.08;
+key.shadow.camera.bottom = -0.08;
+key.shadow.bias = -0.0005;
 scene.add(key);
-const rim = new THREE.DirectionalLight(0x4fc3f7, 0.5);
-rim.position.set(-0.14, -0.1, -0.12);
+
+const fill = new THREE.DirectionalLight(0xb0c4e8, 0.5);
+fill.position.set(-0.14, 0.05, 0.1);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd0a0, 0.7);
+rim.position.set(-0.05, -0.08, -0.15);
 scene.add(rim);
 
-// Ground grid for spatial reference (motor is ~0.12 m).
-const grid = new THREE.GridHelper(0.2, 20, 0x1d3142, 0x122130);
-grid.rotation.x = Math.PI / 2;
-scene.add(grid);
+// Shadow-receiving ground plane.
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.4, 0.4),
+  new THREE.MeshStandardMaterial({
+    color: 0x111316,
+    metalness: 0.0,
+    roughness: 0.92,
+  })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.065;
+ground.receiveShadow = true;
+scene.add(ground);
 
 let currentModel = null;
 const materialNodes = new Map(); // name -> THREE.Object3D
@@ -103,14 +134,28 @@ async function showCheckpoint(run, step, level) {
     // Index material nodes by name for per-material toggling.
     model.traverse((o) => {
       if (o.isMesh) {
-        o.castShadow = false;
+        o.castShadow = true;
+        o.receiveShadow = true;
         const name = (o.name || o.parent?.name || "").toLowerCase();
         for (const mat of ["iron", "copper", "pm"]) {
           if (name.includes(mat)) {
             materialNodes.set(mat, o);
-            o.material.metalness = mat === "iron" ? 0.85 : mat === "pm" ? 0.6 : 0.9;
-            o.material.roughness = mat === "copper" ? 0.35 : 0.55;
-            o.material.envMapIntensity = 1.0;
+            if (mat === "iron") {
+              o.material = new THREE.MeshStandardMaterial({
+                color: 0x7a8a9c, metalness: 0.92, roughness: 0.38,
+                envMapIntensity: 1.2,
+              });
+            } else if (mat === "copper") {
+              o.material = new THREE.MeshStandardMaterial({
+                color: 0xc87533, metalness: 0.95, roughness: 0.28,
+                envMapIntensity: 1.4,
+              });
+            } else {
+              o.material = new THREE.MeshStandardMaterial({
+                color: 0x8a2042, metalness: 0.5, roughness: 0.45,
+                envMapIntensity: 0.8,
+              });
+            }
           }
         }
       }

@@ -19,7 +19,7 @@ import jax
 import numpy as np
 
 from organic_motor.config3d import MotorConfig3D
-from organic_motor.construct import baseline_motor, score
+from organic_motor.construct import baseline_motor, field_driven_motor, score
 from organic_motor.construct.export import export_meshes, save_checkpoint
 
 
@@ -57,9 +57,9 @@ def main() -> None:
         torque_n_z=16,
         torque_n_r=16,
     )
-    motor = baseline_motor(cfg)
+    motor = field_driven_motor(cfg)
 
-    print("[construct] building baseline motor from SDF Booleans...")
+    print("[construct] building LEAP 71 field-driven motor from SDF Booleans...")
     mf = motor.build()
     densities = mf.to_densities()
     for m in ("air", "iron", "copper", "pm"):

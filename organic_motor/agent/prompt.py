@@ -160,18 +160,22 @@ BASELINE_CODE = '''# LEAP 71 field-driven motor: functional voids first, then gr
 # Stator yoke thickens where flux is high.  Cooling is helical voids
 # whose walls thicken where the winding runs hot.  A rotor sleeve
 # contains the magnets; segmentation slits suppress eddy currents.
+# Real 3D windings have slot conductors and end turns.
+# Shaft, bearings and housing complete the mechanical assembly.
 def build(cfg):
     mf = MaterialField(cfg.shape, cfg.spacing, cfg.origin)
-    B = airgap_B(cfg)      # reduced-physics flux density field
-    q = joule_heat(cfg)    # reduced-physics Joule heat field
+    B = airgap_B(cfg)
+    q = joule_heat(cfg)
 
+    mf = ShaftAndBearings(cfg).build(mf)
     mf = RotorCore(cfg).build(mf)
     mf = FieldDrivenMagnets(cfg, thickness_field=B).build(mf)
     mf = RotorSleeve(cfg).build(mf)
     mf = FieldDrivenStatorYoke(cfg, flux_field=B).build(mf)
     mf = StatorSegmentation(cfg).build(mf)
-    mf = DistributedWinding(cfg).build(mf)
+    mf = Winding3D(cfg).build(mf)
     mf = HelicalCoolingChannels(cfg, heat_field=q).build(mf)
+    mf = MotorHousing(cfg).build(mf)
     return mf
 
 def magnetization(cfg):

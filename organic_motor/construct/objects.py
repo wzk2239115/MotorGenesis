@@ -357,6 +357,87 @@ class DistributedWinding:
 
 
 @dataclass
+class Winding3D:
+    """Real 3D distributed winding with slot conductors and end turns.
+
+    Each coil is a continuous copper loop: two straight axial sections in
+    slots on opposite sides of a tooth, connected by curved end turns that
+    arc over the stator ends.  Multiple concentric turns give the layered
+    coil-pack appearance of a real form-wound or hairpin winding.
+
+    This replaces the continuous copper annulus with readable coil geometry
+    that has clear slot conductors, end-winding overhangs and turn-to-turn
+    spacing -- the visual signature of a real motor.
+    """
+
+    cfg: MotorConfig3D
+    n_slots: int = 12
+    coil_span: int = 3
+    n_layers: int = 2
+    conductor_radial: float = 0.004
+    end_turn_rise: float = 0.003
+    end_turn_gap: float = 0.001
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.field import SDFVoxelField
+
+        cfg = self.cfg
+        cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
+        hz = cfg.stator_half_length
+        r_wi = cfg.R_winding_inner
+        r_wo = cfg.R_winding_outer
+        slot_pitch = 2.0 * np.pi / self.n_slots
+        cond_half = self.conductor_radial * 0.5
+
+        X, Y, Z, r, theta = _angles_of(cfg)
+        copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+
+        slot_width = slot_pitch * 0.72
+
+        for slot in range(self.n_slots):
+            theta_slot = slot * slot_pitch
+            d_theta = np.mod(theta - theta_slot + np.pi, 2 * np.pi) - np.pi
+            in_slot = np.abs(d_theta) < slot_width * 0.5
+
+            for layer in range(self.n_layers):
+                r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
+                radial_dist = np.abs(r - r_mid) - cond_half
+                angular_dist = r_mid * (np.abs(d_theta) - slot_width * 0.5)
+                angular_dist = np.maximum(angular_dist, 0.0)
+                seg_dist = np.sqrt(radial_dist ** 2 + angular_dist ** 2)
+                axial = np.abs(Z - cz) - hz
+                axial_clamped = np.maximum(axial, 0.0)
+                dist = np.sqrt(seg_dist ** 2 + axial_clamped ** 2)
+                copper_sdf = np.minimum(copper_sdf, dist - cond_half * 0.5)
+
+        for coil in range(self.n_slots):
+            slot_a = coil
+            slot_b = (coil + self.coil_span) % self.n_slots
+            theta_a = slot_a * slot_pitch
+            theta_b = slot_b * slot_pitch
+
+            for layer in range(self.n_layers):
+                r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
+
+                for sign in (+1, -1):
+                    z_end = cz + sign * (hz + self.end_turn_gap + cond_half)
+                    mid = 0.5 * (theta_a + theta_b)
+                    half_span = 0.5 * self.coil_span * slot_pitch
+                    d_mid = np.mod(theta - mid + np.pi, 2 * np.pi) - np.pi
+                    in_arc = np.abs(d_mid) < half_span
+                    d_a = np.abs(np.mod(theta - theta_a + np.pi, 2 * np.pi) - np.pi)
+                    d_b = np.abs(np.mod(theta - theta_b + np.pi, 2 * np.pi) - np.pi)
+                    arc_dist = np.where(in_arc, 0.0, np.minimum(d_a, d_b)).astype(np.float32)
+                    dist_end = np.sqrt(
+                        (r - r_mid) ** 2 + (Z - z_end) ** 2 + (r_mid * arc_dist) ** 2
+                    )
+                    copper_sdf = np.minimum(copper_sdf, dist_end - cond_half * 0.5)
+
+        mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin), "copper", priority=True)
+        return mf
+
+
+@dataclass
 class CoolingJacket:
     """A gyroid-sheet coolant wall around the stator outer radius.
 
@@ -548,6 +629,102 @@ class StatorSegmentation:
         return mf
 
 
+@dataclass
+class ShaftAndBearings:
+    """Central shaft, bearing races and end caps.
+
+    Completes the mechanical assembly so the motor reads as a machine, not
+    an isolated electromagnetic core.  The shaft extends beyond the stator
+    for coupling; two bearing races sit at the ends; thin end caps close
+    the housing and provide bearing seats.
+    """
+
+    cfg: MotorConfig3D
+    shaft_extension: float = 0.012
+    bearing_width: float = 0.004
+    bearing_radius: float = 0.0
+    end_cap_thickness: float = 0.003
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.field import SDFVoxelField
+
+        cfg = self.cfg
+        cx, cy, cz = cfg.center
+        hz = cfg.stator_half_length
+        r_shaft = cfg.R_shaft
+        r_bearing = self.bearing_radius or (r_shaft + 0.006)
+        r_cap = cfg.R_design + 0.006
+
+        X, Y, Z, r, _theta = _angles_of(cfg)
+        shaft_half = hz + self.shaft_extension
+        shaft_sdf = np.maximum(r - r_shaft, np.abs(Z - cz) - shaft_half)
+
+        bearing_half = self.bearing_width * 0.5
+        cap_half = self.end_cap_thickness * 0.5
+        parts = [shaft_sdf]
+        for sign in (+1, -1):
+            z_b = cz + sign * (hz + bearing_half)
+            axial_b = np.abs(Z - z_b) - bearing_half
+            bearing_outer = np.maximum(r - r_bearing, axial_b)
+            bearing_hole = np.maximum(r - r_shaft, axial_b)
+            parts.append(np.maximum(bearing_outer, -bearing_hole))
+
+            z_c = cz + sign * (hz + self.bearing_width + cap_half)
+            axial_c = np.abs(Z - z_c) - cap_half
+            cap_outer = np.maximum(r - r_cap, axial_c)
+            cap_hole = np.maximum(r - (r_bearing + 0.001), axial_c)
+            parts.append(np.maximum(cap_outer, -cap_hole))
+
+        combined = parts[0]
+        for p in parts[1:]:
+            combined = np.minimum(combined, p)
+
+        mf.add(SDFVoxelField(sdf=combined.astype(np.float32),
+                             spacing=cfg.spacing, origin=cfg.origin),
+               "iron", priority=True)
+        return mf
+
+
+@dataclass
+class MotorHousing:
+    """Outer cylindrical housing with mounting ears.
+
+    Completes the mechanical envelope: a cylindrical shell outside the
+    stator provides structural stiffness and mounting points.  Small
+    mounting ears with bolt holes make it a bolted assembly, not a free-
+    floating core.
+    """
+
+    cfg: MotorConfig3D
+    housing_radius: float = 0.058
+    housing_thickness: float = 0.003
+    n_mounting_ears: int = 4
+    ear_size: float = 0.008
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        cfg = self.cfg
+        cx, cy, cz = cfg.center
+        hz = cfg.stator_half_length
+        r_in = self.housing_radius
+        r_out = r_in + self.housing_thickness
+        shell = _annulus(cfg, r_in, r_out, hz + 0.002)
+        mf.add(shell, "iron", priority=True)
+        pitch = 2.0 * np.pi / self.n_mounting_ears
+        for i in range(self.n_mounting_ears):
+            angle = i * pitch
+            ex = cx + r_out * np.cos(angle)
+            ey = cy + r_out * np.sin(angle)
+            ear = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
+                                cylinder_z((float(ex), float(ey)),
+                                           self.ear_size * 0.5, hz + 0.002))
+            bolt = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
+                                 cylinder_z((float(ex), float(ey)),
+                                            self.ear_size * 0.18, hz + 0.002))
+            ear = boolean_subtract(ear, bolt)
+            mf.add(ear, "iron", priority=True)
+        return mf
+
+
 # ---------------------------------------------------------------------------
 # Whole motor assembly
 # ---------------------------------------------------------------------------
@@ -600,17 +777,18 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
     profile, the stator yoke thickens where flux is high, the cooling
     channels are helical voids with walls that thicken where the winding
     runs hot, a rotor sleeve contains the magnets, and segmentation slits
-    suppress eddy currents.  This is the LEAP 71 ``radius = f(position,
-    physics)`` pattern applied across all material ``tissues``, with
-    functional voids first and multi-functional structures.
+    suppress eddy currents.  Real 3D windings have slot conductors and end
+    turns.  Shaft, bearings and housing complete the mechanical assembly.
     """
     cfg = cfg or MotorConfig3D()
     return Motor(cfg, components=[
+        ShaftAndBearings(cfg),
         RotorCore(cfg),
         FieldDrivenMagnets(cfg),
         RotorSleeve(cfg),
         FieldDrivenStatorYoke(cfg),
         StatorSegmentation(cfg),
-        DistributedWinding(cfg),
+        Winding3D(cfg),
         HelicalCoolingChannels(cfg),
+        MotorHousing(cfg),
     ])
