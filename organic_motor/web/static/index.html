@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MotorGenesis · 有机电机的形态发生</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <header>
+      <h1>MotorGenesis</h1>
+      <p class="tag">有机电机 · 形态发生实时观察台</p>
+    </header>
+
+    <section class="panel">
+      <label for="runSelect">运行实例</label>
+      <select id="runSelect"><option value="">加载中…</option></select>
+    </section>
+
+    <section class="panel">
+      <label>形态发生时间轴</label>
+      <div class="timeline">
+        <button id="prevBtn" title="上一步">‹</button>
+        <input id="stepRange" type="range" min="0" max="0" value="0" />
+        <button id="nextBtn" title="下一步">›</button>
+      </div>
+      <div class="step-info"><span id="stepLabel">—</span></div>
+      <label class="live-toggle">
+        <input id="liveToggle" type="checkbox" /> 实时跟随最新生长
+      </label>
+    </section>
+
+    <section class="panel">
+      <label>材料显示</label>
+      <div id="materialToggles" class="toggles"></div>
+      <label>等值面阈值 <span id="levelVal">0.35</span></label>
+      <input id="levelRange" type="range" min="0.15" max="0.65" step="0.05" value="0.35" />
+    </section>
+
+    <section class="panel">
+      <label>物理场切片</label>
+      <select id="sliceField">
+        <option value="temperature">温度 T [°C]</option>
+        <option value="Bmag">磁通密度 |B| [T]</option>
+        <option value="Jmag">电流密度 |J|</option>
+        <option value="rho_iron">铁密度</option>
+        <option value="rho_copper">铜密度</option>
+        <option value="rho_pm">磁钢密度</option>
+      </select>
+      <div class="slice-axes">
+        <button data-axis="0">X 切</button>
+        <button data-axis="1" class="active">Y 切</button>
+        <button data-axis="2" class="active main">Z 切</button>
+      </div>
+      <input id="sliceIndex" type="range" min="0" max="0" value="0" />
+      <canvas id="sliceCanvas" width="240" height="240"></canvas>
+    </section>
+
+    <section class="panel metrics">
+      <label>当前指标</label>
+      <dl id="metricList"></dl>
+    </section>
+
+    <footer>
+      <span id="statusLine" class="status">就绪</span>
+    </footer>
+  </aside>
+
+  <main id="viewport">
+    <div id="loadOverlay" class="overlay">
+      <div class="spinner"></div>
+      <p id="loadText">初始化…</p>
+    </div>
+    <div id="hud" class="hud">
+      <span id="fpsHud">—</span>
+    </div>
+  </main>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

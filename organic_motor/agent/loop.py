@@ -1,0 +1,261 @@
+"""The agent loop: propose -> sandbox -> critic -> checkpoint -> feedback.
+
+Each iteration an LLM (or fallback heuristic) writes construction code, the
+sandbox builds a :class:`MaterialField` from it, the differentiable solver
+scores it, and the result is written as a viewer-compatible checkpoint.  The
+score and any execution error are fed back, so the agent corrects itself.
+
+Run with::
+
+    MOTORGENESIS_X64=0 python -m organic_motor.agent --iters 6
+    motor-web --out organic_motor/out   # watch the agent evolve live
+
+The loop is deliberately agnostic to the proposer: pass any callable that
+returns a code string.  With no API key it falls back to a parametric
+hill-climb so the infrastructure is exercised without an LLM.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+import numpy as np
+
+from organic_motor.config3d import MotorConfig3D
+from organic_motor.construct.critic import score_fields
+from organic_motor.construct.export import save_checkpoint
+from organic_motor.agent.prompt import BASELINE_CODE, FEEDBACK_TEMPLATE, SYSTEM_PROMPT
+from organic_motor.agent.sandbox import execute_agent_code
+
+
+@dataclass
+class IterationResult:
+    iter: int
+    code: str
+    metrics: dict
+    error: str | None
+    elapsed: float
+
+
+@dataclass
+class RunResult:
+    out_dir: Path
+    iterations: list[IterationResult] = field(default_factory=list)
+    best_iter: int = 0
+    best_obj: float = float("inf")
+
+    @property
+    def best(self) -> IterationResult:
+        return self.iterations[self.best_iter] if self.iterations else None
+
+
+def _metrics_table(metrics: dict) -> str:
+    keys = (
+        "obj", "torque", "|torque|", "torque_ripple", "copper_loss_W",
+        "iron_loss_W", "loss_W", "temperature_max_C",
+        "vol_iron", "vol_copper", "vol_pm",
+        "maxwell_residual", "thermal_residual", "electric_residual",
+    )
+    lines = []
+    for k in keys:
+        if k in metrics:
+            lines.append(f"  {k:<24} {metrics[k]:.4g}")
+    return "\n".join(lines) if lines else "  (no metrics)"
+
+
+def _diagnosis(metrics: dict, error: str | None) -> str:
+    if error:
+        return (
+            "The code FAILED to run. Fix the error below and resubmit a "
+            "complete code block. Common fixes: define build(cfg), use only "
+            "the imported primitives, guard divisions with max(x, 1e-9).\n\n"
+            "Traceback:\n" + error[-1500:]
+        )
+    parts = []
+    obj = metrics.get("obj", float("inf"))
+    torque = metrics.get("torque", 0.0)
+    parts.append(f"Objective (lower=better): {obj:.4g}. Torque: {torque:.4g} N*m.")
+    if torque <= 0:
+        parts.append("Torque is near zero: the PM poles and winding are not coupling. "
+                     "Check magnetisation alternates N/S and the winding annulus overlaps the phase belts.")
+    if metrics.get("maxwell_residual", 1.0) > 0.5:
+        parts.append("Maxwell solver did not converge well; the iron magnetic circuit may be broken "
+                     "(discontinuities) or the air gap is mis-sized.")
+    if metrics.get("temperature_max_C", 0.0) > 100:
+        parts.append("Too hot: reduce copper loss (less current path resistance) or add cooling.")
+    if metrics.get("vol_pm", 0.0) > 0.15:
+        parts.append("PM volume is high (penalised); a thinner or narrower magnet may suffice.")
+    return " ".join(parts) if parts else "Design is reasonable; refine for more torque or less loss."
+
+
+class LLMAgent:
+    """Calls the configured LLM to propose construction code each iteration."""
+
+    def __init__(self, model: str | None = None, max_tokens: int = 16384, temperature: float = 0.4):
+        from organic_motor.agent.llm import LLMClient
+
+        # Default to gemini-3.6-flash: fast, non-reasoning, produces clean
+        # code blocks.  Reasoning models (deepseek-v4, glm-5.3) eat the token
+        # budget on chain-of-thought and emit empty content.
+        self.client = LLMClient(model=model or "google/gemini-3.6-flash")
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+
+    def propose(self, feedback: str) -> str:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": feedback},
+        ]
+        resp = self.client.complete(
+            messages, max_tokens=self.max_tokens, temperature=self.temperature
+        )
+        from organic_motor.agent.llm import extract_code
+
+        code = extract_code(resp.content)
+        if code is None:
+            raise RuntimeError(f"LLM returned no code block. Content: {resp.content[:300]}")
+        return code
+
+    def __call__(self, feedback: str) -> str:
+        return self.propose(feedback)
+
+
+class AgentLoop:
+    """Orchestrates propose -> sandbox -> critic -> checkpoint -> feedback."""
+
+    def __init__(
+        self,
+        cfg: MotorConfig3D,
+        out_dir: str | Path,
+        agent: Callable[[str], str] | None = None,
+        max_iters: int = 5,
+        baseline_code: str = BASELINE_CODE,
+    ):
+        self.cfg = cfg
+        self.out_dir = Path(out_dir)
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        (self.out_dir / "checkpoints").mkdir(exist_ok=True)
+        self.agent = agent
+        self.max_iters = max_iters
+        self.baseline_code = baseline_code
+
+    def _score(self, code: str) -> tuple[dict, str | None, object, object]:
+        mf, mag, err = execute_agent_code(code, self.cfg)
+        if err is not None:
+            return {"obj": float("inf"), "error": True}, err, None, None
+        metrics = score_fields(mf, self.cfg, mag)
+        metrics["materials"] = mf.materials_present()
+        return metrics, None, mf, mag
+
+    def run(self) -> RunResult:
+        result = RunResult(out_dir=self.out_dir)
+        code = self.baseline_code
+        print(f"[agent] loop start; {self.max_iters} iters; out={self.out_dir}")
+        for i in range(self.max_iters):
+            t0 = time.perf_counter()
+            metrics, err, mf, mag = self._score(code)
+            elapsed = time.perf_counter() - t0
+            if mf is not None:
+                save_checkpoint(
+                    mf, self.cfg,
+                    self.out_dir / "checkpoints" / f"step_{i:06d}.npz",
+                    step=i, metrics=metrics, magnetization=mag,
+                )
+            ir = IterationResult(iter=i, code=code, metrics=metrics, error=err, elapsed=elapsed)
+            result.iterations.append(ir)
+            obj = metrics.get("obj", float("inf"))
+            if obj < result.best_obj:
+                result.best_obj = obj
+                result.best_iter = i
+            self._log(ir, result)
+            (self.out_dir / "history.json").write_text(
+                json.dumps(
+                    {
+                        "best_iter": result.best_iter,
+                        "best_obj": result.best_obj,
+                        "iterations": [
+                            {
+                                "iter": r.iter, "obj": r.metrics.get("obj"),
+                                "torque": r.metrics.get("torque"),
+                                "temperature_max_C": r.metrics.get("temperature_max_C"),
+                                "error": r.error, "elapsed": r.elapsed,
+                                "code": r.code,
+                            }
+                            for r in result.iterations
+                        ],
+                    },
+                    indent=2,
+                    default=str,
+                ),
+                encoding="utf-8",
+            )
+            if i == self.max_iters - 1:
+                break
+            feedback = FEEDBACK_TEMPLATE.format(
+                iter=i + 1,
+                code=code if len(code) < 4000 else code[:4000] + "    # ... (truncated)",
+                metrics_table=_metrics_table(metrics),
+                diagnosis=_diagnosis(metrics, err),
+            )
+            try:
+                if self.agent is not None:
+                    code = self.agent(feedback)
+                else:
+                    code = self._heuristic_propose(code, metrics, i)
+            except Exception as exc:
+                print(f"[agent] proposer failed ({exc}); keeping current code")
+        print(
+            f"[agent] loop done; best iter {result.best_iter} "
+            f"obj={result.best_obj:.4g}"
+        )
+        return result
+
+    def _log(self, ir: IterationResult, result: RunResult) -> None:
+        m = ir.metrics
+        if ir.error:
+            print(f"  iter {ir.iter}: FAILED ({ir.elapsed:.0f}s)")
+            print(f"    {ir.error.splitlines()[-1] if ir.error else ''}")
+            return
+        marker = " *" if ir.iter == result.best_iter else ""
+        print(
+            f"  iter {ir.iter}: obj={m.get('obj', float('nan')):.4g} "
+            f"torque={m.get('torque', 0):.4g} "
+            f"loss={m.get('loss_W', 0):.3g}W "
+            f"Tmax={m.get('temperature_max_C', 0):.1f}C "
+            f"({ir.elapsed:.0f}s){marker}"
+        )
+
+    def _heuristic_propose(self, code: str, metrics: dict, i: int) -> str:
+        """Parametric fallback when no LLM is configured.
+
+        Re-sends the baseline with a perturbed magnet thickness / pole
+        fraction, so the loop infrastructure is exercised without an API key.
+        """
+        thickness = 0.0035 + 0.0008 * np.sin(i)
+        frac = 0.72 + 0.06 * np.cos(i)
+        return self.baseline_code.replace("0.0035", f"{thickness:.5f}").replace(
+            "0.72", f"{frac:.4f}"
+        )
+
+
+def run_loop(
+    cfg: MotorConfig3D | None = None,
+    out_dir: str | Path = "organic_motor/out/agent",
+    max_iters: int = 5,
+    use_llm: bool = True,
+    model: str | None = None,
+) -> RunResult:
+    """Convenience entry point for the CLI and tests."""
+    cfg = cfg or MotorConfig3D(
+        shape=(48, 48, 32), excitation_mode="terminal", filt_radius=0.0,
+        projection_beta=0.0, mechanical_angles=3,
+        maxwell_maxiter=120, thermal_maxiter=240, electric_maxiter=120,
+        n_theta=32, torque_n_z=16, torque_n_r=16,
+    )
+    agent = LLMAgent(model=model) if use_llm else None
+    loop = AgentLoop(cfg, out_dir, agent=agent, max_iters=max_iters)
+    return loop.run()

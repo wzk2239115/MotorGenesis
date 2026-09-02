@@ -1,0 +1,15 @@
+[submodule "vendor/leap71/PicoGK"]
+	path = vendor/leap71/PicoGK
+	url = https://github.com/leap71/PicoGK.git
+[submodule "vendor/leap71/LEAP71_ShapeKernel"]
+	path = vendor/leap71/LEAP71_ShapeKernel
+	url = https://github.com/leap71/LEAP71_ShapeKernel.git
+[submodule "vendor/leap71/LEAP71_LatticeLibrary"]
+	path = vendor/leap71/LEAP71_LatticeLibrary
+	url = https://github.com/leap71/LEAP71_LatticeLibrary.git
+[submodule "vendor/leap71/PicoGK_SimulationExample"]
+	path = vendor/leap71/PicoGK_SimulationExample
+	url = https://github.com/leap71/PicoGK_SimulationExample.git
+[submodule "vendor/leap71/LEAP71_HelixHeatX"]
+	path = vendor/leap71/LEAP71_HelixHeatX
+	url = https://github.com/leap71/LEAP71_HelixHeatX.git

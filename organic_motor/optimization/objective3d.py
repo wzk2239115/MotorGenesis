@@ -277,16 +277,18 @@ def _source_residuals(
     return div_res, balance
 
 
-def forward3d(
+def _forward3d_core(
     cfg: MotorConfig3D,
-    logits: jnp.ndarray,
-    rotor_logits: jnp.ndarray,
+    fields: TopologyFields3D,
     magnetization_raw: jnp.ndarray,
-    angles: Sequence[float] | jnp.ndarray | None = None,
-    temperature: float | None = None,
+    angles: Sequence[float] | jnp.ndarray | None,
 ) -> ForwardResult3D:
-    """Run native 3-D Maxwell solves at multiple mechanical rotor angles."""
-    fields = assemble3d(logits, rotor_logits, cfg, temperature)
+    """Body of :func:`forward3d` once the topology fields are assembled.
+
+    Shared by the optimisation entry point (which soft-maxes logits into
+    fields) and the constructive-critic entry point (which receives fields
+    built from SDF Booleans).  Either way the physics is identical.
+    """
     magnetization = normalized_magnetization3d(fields.rho_pm, magnetization_raw, cfg)
     if angles is None:
         count = int(getattr(cfg, "mechanical_angles", 3))
@@ -395,6 +397,39 @@ def forward3d(
         source_div,
         phase_balance,
     )
+
+
+def forward3d(
+    cfg: MotorConfig3D,
+    logits: jnp.ndarray,
+    rotor_logits: jnp.ndarray,
+    magnetization_raw: jnp.ndarray,
+    angles: Sequence[float] | jnp.ndarray | None = None,
+    temperature: float | None = None,
+) -> ForwardResult3D:
+    """Run native 3-D Maxwell solves at multiple mechanical rotor angles.
+
+    Softmax-maps unconstrained ``logits`` into the four-phase topology, then
+    runs the shared physics core.  This is the optimisation-time entry point.
+    """
+    fields = assemble3d(logits, rotor_logits, cfg, temperature)
+    return _forward3d_core(cfg, fields, magnetization_raw, angles)
+
+
+def forward3d_fields(
+    cfg: MotorConfig3D,
+    fields: TopologyFields3D,
+    magnetization_raw: jnp.ndarray,
+    angles: Sequence[float] | jnp.ndarray | None = None,
+) -> ForwardResult3D:
+    """Critic entry point: score an already-assembled constructed topology.
+
+    The constructive layer builds ``fields`` directly from SDF Booleans; this
+    bypasses the softmax/masking of :func:`assemble3d` so the geometry the
+    critic solves is exactly what was constructed (cooling jackets, shaft
+    bores and other non-design-region solids are preserved).
+    """
+    return _forward3d_core(cfg, fields, magnetization_raw, angles)
 
 
 def _anchor_seeds(cfg: MotorConfig3D) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
