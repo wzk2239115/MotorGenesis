@@ -193,6 +193,42 @@ def boolean_intersect(a: SDFVoxelField, b: SDFVoxelField) -> SDFVoxelField:
     )
 
 
+def _smooth_min(a: np.ndarray, b: np.ndarray, k: float) -> np.ndarray:
+    """Polynomial smooth minimum (Ricci blend) of two SDF arrays.
+
+    When ``|a - b| < k`` the two surfaces blend with a smooth fillet of
+    radius ~k/2; outside that zone it falls back to the hard ``min``.
+    This is the single operation that turns hard Boolean assemblies into
+    the organic, bone-like fused structures LEAP 71 is known for.
+    """
+    h = np.maximum(k - np.abs(a - b), 0.0) / k
+    return np.minimum(a, b) - h * h * k * 0.25
+
+
+def smooth_boolean_add(a: SDFVoxelField, b: SDFVoxelField, blend: float = 0.001) -> SDFVoxelField:
+    """Smooth union: like :func:`boolean_add` but with a fillet at the seam.
+
+    ``blend`` is the blend radius in metres.  At 0 it degenerates to the
+    hard ``min``; at 1–2 mm it produces visibly rounded junctions.
+    """
+    _same_grid(a, b)
+    if blend <= 0.0:
+        return boolean_add(a, b)
+    return SDFVoxelField(
+        sdf=_smooth_min(a.sdf, b.sdf, float(blend)), spacing=a.spacing, origin=a.origin
+    )
+
+
+def smooth_boolean_subtract(a: SDFVoxelField, b: SDFVoxelField, blend: float = 0.001) -> SDFVoxelField:
+    """Smooth subtraction: like :func:`boolean_subtract` with a fillet."""
+    _same_grid(a, b)
+    if blend <= 0.0:
+        return boolean_subtract(a, b)
+    return SDFVoxelField(
+        sdf=-_smooth_min(-a.sdf, b.sdf, float(blend)), spacing=a.spacing, origin=a.origin
+    )
+
+
 def offset(field: SDFVoxelField, distance: float) -> SDFVoxelField:
     """Grow (``distance > 0``) or shrink (``distance < 0``) a solid.
 

@@ -32,7 +32,7 @@ def _shape(text: str) -> tuple[int, int, int]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--shape", type=_shape, default=(48, 48, 32))
+    ap.add_argument("--shape", type=_shape, default=(56, 56, 36))
     ap.add_argument("--angles", type=int, default=3)
     ap.add_argument("--maxwell-iters", type=int, default=120)
     ap.add_argument("--thermal-iters", type=int, default=240)

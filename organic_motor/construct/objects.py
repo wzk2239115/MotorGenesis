@@ -286,13 +286,11 @@ class FieldDrivenStatorYoke:
 
     def build(self, mf: MaterialField) -> MaterialField:
         from organic_motor.construct.fields_motor import airgap_B
-        from organic_motor.construct.field import SDFVoxelField
+        from organic_motor.construct.field import SDFVoxelField, smooth_boolean_subtract
 
         cfg = self.cfg
+        cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
         hz = cfg.stator_half_length
-        cx, cy = cfg.center[0], cfg.center[1]
-        # The yoke MUST stay connected to the air gap (r = R_stator_inner) so
-        # the magnetic circuit never opens; thickness grows outward from there.
         r_inner = cfg.R_stator_inner
         max_available = cfg.R_design - cfg.R_stator_inner
         max_thickness = min(self.max_yoke_thickness, max_available)
@@ -302,37 +300,28 @@ class FieldDrivenStatorYoke:
             field = airgap_B(cfg)
         fmag = np.abs(field.data)
         fmax = max(float(fmag.max()), 1e-9)
+        b_norm = np.clip(fmag / fmax, 0.0, 1.0).astype(np.float32)
 
-        _X, _Y, _Z, r, theta = _angles_of(cfg)
-        slice_pitch = 2.0 * np.pi / self.angular_slices
-        sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
-        for s in range(self.angular_slices):
-            centre = s * slice_pitch
-            mask = np.abs(((theta - centre + np.pi) % (2 * np.pi)) - np.pi) < slice_pitch * 0.5
-            b_avg = float(fmag[mask].mean()) / fmax if mask.any() else 0.0
-            thickness = self.min_yoke_thickness + (max_thickness - self.min_yoke_thickness) * b_avg
-            r_outer = r_inner + thickness
-            a0 = centre - slice_pitch * 0.5
-            a1 = centre + slice_pitch * 0.5
-            slice_sdf = from_implicit(
-                cfg.shape, cfg.spacing, cfg.origin,
-                annular_sector((cx, cy), r_inner, r_outer, a0, a1, hz),
-            )
-            sdf = np.minimum(sdf, slice_sdf.sdf)
-        yoke = SDFVoxelField(sdf=sdf.astype(np.float32), spacing=cfg.spacing, origin=cfg.origin)
+        X, Y, Z, r, theta = _angles_of(cfg)
+        r_outer = r_inner + self.min_yoke_thickness + (max_thickness - self.min_yoke_thickness) * b_norm
+        rm = 0.5 * (r_inner + r_outer)
+        dr = 0.5 * (r_outer - r_inner)
+        radial = np.abs(r - rm) - dr
+        axial = np.abs(Z - cz) - hz
+        yoke_sdf = np.maximum(radial, axial).astype(np.float32)
 
+        yoke = SDFVoxelField(sdf=yoke_sdf, spacing=cfg.spacing, origin=cfg.origin)
         pitch = 2.0 * np.pi / self.slots
-        slot_r0 = cfg.R_stator_inner
         slot_r1 = cfg.R_winding_outer
         for s in range(self.slots):
             centre = s * pitch
             span = self.slot_opening / max(cfg.R_stator_inner, 1e-6)
             opening = from_implicit(
                 cfg.shape, cfg.spacing, cfg.origin,
-                annular_sector((cx, cy), slot_r0, slot_r1,
+                annular_sector((cx, cy), cfg.R_stator_inner, slot_r1,
                                centre - span * 0.5, centre + span * 0.5, hz),
             )
-            yoke = boolean_subtract(yoke, opening)
+            yoke = smooth_boolean_subtract(yoke, opening, blend=0.001)
         mf.add(yoke, "iron", priority=True)
         return mf
 
@@ -391,41 +380,37 @@ class Winding3D:
 
         X, Y, Z, r, theta = _angles_of(cfg)
         copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+        n_arc_samples = 16
 
         for coil in range(self.n_slots):
             slot_a = coil
             slot_b = (coil + self.coil_span) % self.n_slots
             theta_a = slot_a * slot_pitch
             theta_b = slot_b * slot_pitch
-
             d_ab = np.mod(theta_b - theta_a + np.pi, 2 * np.pi) - np.pi
-            mid = theta_a + d_ab * 0.5
-            half_span = abs(d_ab) * 0.5
 
             for layer in range(self.n_layers):
                 r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
 
                 d_ta = np.mod(theta - theta_a + np.pi, 2 * np.pi) - np.pi
                 d_tb = np.mod(theta - theta_b + np.pi, 2 * np.pi) - np.pi
-                d_mid = np.mod(theta - mid + np.pi, 2 * np.pi) - np.pi
-
                 radial_a = np.sqrt((r - r_mid) ** 2 + (r_mid * d_ta) ** 2)
                 radial_b = np.sqrt((r - r_mid) ** 2 + (r_mid * d_tb) ** 2)
                 axial_in = np.maximum(np.abs(Z - cz) - hz, 0.0)
-                dist_a = np.sqrt(radial_a ** 2 + axial_in ** 2)
-                dist_b = np.sqrt(radial_b ** 2 + axial_in ** 2)
-                copper_sdf = np.minimum(copper_sdf, dist_a - wr)
-                copper_sdf = np.minimum(copper_sdf, dist_b - wr)
-
-                in_arc = np.abs(d_mid) < half_span
-                arc_d = np.where(in_arc, 0.0, np.minimum(np.abs(d_ta), np.abs(d_tb)))
+                copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_a ** 2 + axial_in ** 2) - wr)
+                copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_b ** 2 + axial_in ** 2) - wr)
 
                 for sign in (+1, -1):
-                    z_arc = cz + sign * (hz + self.end_turn_rise * 0.5)
-                    dist_end = np.sqrt(
-                        (r - r_mid) ** 2 + (Z - z_arc) ** 2 + (r_mid * arc_d) ** 2
-                    )
-                    copper_sdf = np.minimum(copper_sdf, dist_end - wr)
+                    z_base = cz + sign * hz
+                    for si in range(n_arc_samples):
+                        s = (si + 0.5) / n_arc_samples
+                        theta_s = theta_a + s * d_ab
+                        z_s = z_base + sign * self.end_turn_rise * np.sin(np.pi * s)
+                        d_ts = np.mod(theta - theta_s + np.pi, 2 * np.pi) - np.pi
+                        dist_s = np.sqrt(
+                            (r - r_mid) ** 2 + (Z - z_s) ** 2 + (r_mid * d_ts) ** 2
+                        )
+                        copper_sdf = np.minimum(copper_sdf, dist_s.astype(np.float32) - wr)
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin), "copper", priority=True)
         return mf
@@ -700,6 +685,8 @@ class MotorHousing:
     ear_size: float = 0.007
 
     def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.field import SDFVoxelField, smooth_boolean_subtract
+
         cfg = self.cfg
         cx, cy, cz = cfg.center
         hz = cfg.stator_half_length + 0.001
@@ -707,35 +694,39 @@ class MotorHousing:
         r_out = r_in + self.housing_thickness
         blade_pitch = 2.0 * np.pi / self.n_blades
         blade_span = blade_pitch * self.blade_fraction
-        ring_hz = hz + 0.001
 
-        full_ring = _annulus(cfg, r_in, r_out, ring_hz)
-        end_rim_top = _annulus(cfg, r_in, r_out + 0.001, 0.0015)
-        end_rim_bot = end_rim_top
-        cage = full_ring
+        X, Y, Z, r, theta = _angles_of(cfg)
+        axial_ring = np.abs(Z - cz) - hz
+        radial_outer = r - r_out
+        radial_inner = r_in - r
+        ring_sdf = np.maximum(radial_outer, np.maximum(radial_inner, axial_ring))
+
         for i in range(self.n_blades):
             centre = i * blade_pitch + blade_pitch * 0.5
-            window = from_implicit(
-                cfg.shape, cfg.spacing, cfg.origin,
-                annular_sector((cx, cy), r_in - 0.001, r_out + 0.001,
-                               centre - blade_span * 0.5,
-                               centre + blade_span * 0.5, ring_hz),
-            )
-            cage = boolean_subtract(cage, window)
-        rim_top = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
-                                cylinder_z((cx, cy), r_out, 0.0015))
-        rim_top_hole = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
-                                     cylinder_z((cx, cy), r_in, 0.0015))
-        rim_top = boolean_subtract(rim_top, rim_top_hole)
-        mf.add(cage, "iron", priority=True)
+            d_theta = np.mod(theta - centre + np.pi, 2 * np.pi) - np.pi
+            in_window = np.abs(d_theta) < blade_span * 0.5
+            angular_d = np.where(in_window, 0.0, np.abs(d_theta) - blade_span * 0.5)
+            window_sdf = np.maximum(
+                np.maximum(r - (r_out + 0.002), (r_in - 0.002) - r),
+                np.maximum(angular_d, np.abs(Z - cz) - (hz + 0.002))
+            ).astype(np.float32)
+            ring_sdf = np.where(
+                window_sdf < 0,
+                np.maximum(ring_sdf, -window_sdf),
+                ring_sdf
+            ).astype(np.float32)
+
+        mf.add(SDFVoxelField(sdf=ring_sdf, spacing=cfg.spacing, origin=cfg.origin),
+               "iron", priority=True)
+
+        ring_half = 0.0018
         for sign in (+1, -1):
-            z_rim = cz + sign * (hz + 0.0015)
-            rim = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
-                                cylinder_z((cx, cy), r_out, 0.0016))
-            rim_hole = from_implicit(cfg.shape, cfg.spacing, cfg.origin,
-                                     cylinder_z((cx, cy), r_in, 0.0016))
-            rim = boolean_subtract(rim, rim_hole)
-            mf.add(rim, "iron", priority=True)
+            z_rim = cz + sign * (hz + ring_half)
+            axial_rim = np.abs(Z - z_rim) - ring_half
+            rim_sdf = np.maximum(r - r_out, np.maximum(r_in - r, axial_rim))
+            mf.add(SDFVoxelField(sdf=rim_sdf.astype(np.float32),
+                                 spacing=cfg.spacing, origin=cfg.origin),
+                   "iron", priority=True)
 
         ear_pitch = 2.0 * np.pi / self.n_mounting_ears
         for i in range(self.n_mounting_ears):

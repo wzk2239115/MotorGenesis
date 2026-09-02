@@ -17,6 +17,8 @@ from organic_motor.construct.field import (
     offset,
     resample,
     shell,
+    smooth_boolean_add,
+    smooth_boolean_subtract,
 )
 from organic_motor.construct.implicit import (
     annular_sector,
