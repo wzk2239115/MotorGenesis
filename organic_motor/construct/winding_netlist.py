@@ -152,6 +152,20 @@ class CoilNetlist:
         """Boolean ``(n_slots,)`` mask: which slots have this phase's conductors."""
         return self.slot_phase_assignment() == phase
 
+    def expected_phase_components(self) -> np.ndarray:
+        """Expected connected-component count per phase, from the topology.
+
+        With phase insulation by radial layer (phase p on layers p, p+3,
+        ...), the coils of one phase chain through shared slot conductors
+        into one ring per occupied layer, so a REALISED winding must have
+        exactly this many components per phase: fewer means a break, more
+        means fragmentation.
+        """
+        return np.array(
+            [len(range(p, self.n_layers, self.n_phases)) for p in range(self.n_phases)],
+            dtype=np.int32,
+        )
+
     def phase_belts_3d(self, cfg: MotorConfig3D) -> np.ndarray:
         """Return ``(3, Nx, Ny, Nz)`` phase assignment matching Winding3D geometry.
 

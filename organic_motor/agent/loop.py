@@ -63,6 +63,8 @@ def _metrics_table(metrics: dict) -> str:
         "air_gap_iron_bridge", "floating_islands",
         "rotor_anchored", "stator_anchored", "min_neck_mm",
         "trapped_voids", "housing_open_area_ratio", "end_face_occlusion",
+        "through_flow_networks", "min_phase_gap_mm",
+        "phase_a_components", "phase_b_components", "phase_c_components",
     )
     lines = []
     for k in keys:
@@ -123,6 +125,20 @@ def _diagnosis(metrics: dict, error: str | None) -> str:
     tv = metrics.get("trapped_voids", 0)
     if tv and tv > 0:
         parts.append(f"{tv} trapped coolant voids -- powder-removal/fill failure; vent them.")
+    tfn = metrics.get("through_flow_networks", None)
+    if tfn is not None and tfn < 1:
+        parts.append("No through-flow coolant network (inlet->outlet) -- the channel is "
+                     "dead-ended; connect it to both axial ends.")
+    pg = metrics.get("min_phase_gap_mm", None)
+    if pg is not None and pg <= 0.0:
+        parts.append("Phase insulation gap is zero -- phases are shorted.")
+    for phase in ("a", "b", "c"):
+        comp = metrics.get(f"phase_{phase}_components", None)
+        exp = (metrics.get("expected_components") or [None, None, None])[
+            "abc".index(phase)]
+        if comp is not None and exp is not None and comp != exp:
+            parts.append(f"Phase {phase.upper()} has {comp} copper networks (expected {exp}) "
+                         "-- breaks or fragmentation in the real winding; check end-turn continuity.")
     hoa = metrics.get("housing_open_area_ratio", 0.0)
     if hoa < 0.1:
         parts.append("Housing is nearly solid -- no windows visible. Add angular cutouts to the housing shell.")

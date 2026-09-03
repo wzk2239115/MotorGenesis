@@ -59,10 +59,15 @@ def anchor_masks(cfg: MotorConfig3D):
 def structural_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
     """Structural connectivity: anchor tracing, floating islands, necks.
 
-    The rotor side (rotor iron + PM + sleeve) must connect to the shaft
-    through the hub; the stator side (yoke + jacket + housing) must
-    connect to the housing ring.  Components touching neither anchor are
-    floating islands.
+    Two ownership graphs with separate anchors:
+      - ROTOR side (rotor iron + PM + sleeve): must trace to the SHAFT.
+      - STATOR side (yoke + housing + caps + jacket walls): must trace to
+        the HOUSING ring.
+
+    A component counts as anchored only if the component that actually
+    contains rotor-iron (resp. stator-iron) touches the corresponding
+    anchor -- merely "some component somewhere touches the shaft" is not a
+    load path.  Components touching neither anchor are floating islands.
     """
     iron = mf.sdfs.get("iron")
     pm = mf.sdfs.get("pm")
@@ -80,12 +85,39 @@ def structural_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
 
     structure = ndimage.generate_binary_structure(3, 1)
     labels, n_comp = ndimage.label(solid, structure=structure)
+    _X, _Y, Z, r = _grids(cfg)
     shaft, housing = anchor_masks(cfg)
     shaft_anchor = shaft & solid
     housing_anchor = housing & solid
 
+    # Component identity by BODY, not by per-voxel radius: end caps and
+    # bearing housings legitimately span the air-gap radius at the machine
+    # ends, so a radial split misclassifies them.  A component is "rotor"
+    # iff it contains rotor-body iron (inside the gap radius, within the
+    # rotor stack), "stator" iff it contains yoke-body iron.
+    r_split = 0.5 * (getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer) + cfg.R_stator_inner)
+    z = np.asarray(Z)
+    rotor_body = solid & (r < r_split) & (np.abs(z - cfg.center[2]) <= cfg.rotor_half_length + 2.0 * cfg.dz)
+    yoke_body = solid & (r >= cfg.R_stator_inner) & (np.abs(z - cfg.center[2]) <= cfg.stator_half_length + 2.0 * cfg.dz)
+
     shaft_labels = set(labels[shaft_anchor].tolist()) - {0} if shaft_anchor.any() else set()
     housing_labels = set(labels[housing_anchor].tolist()) - {0} if housing_anchor.any() else set()
+    rotor_labels = set(labels[rotor_body].tolist()) - {0} if rotor_body.any() else set()
+    yoke_labels = set(labels[yoke_body].tolist()) - {0} if yoke_body.any() else set()
+
+    rotor_anchored = bool(rotor_labels & shaft_labels) if rotor_labels else False
+    stator_anchored = bool(yoke_labels & housing_labels) if yoke_labels else False
+    # A single component containing BOTH the rotor body and the yoke is a
+    # genuine air-gap bridge (rotor and stator fused = crash).  Likewise a
+    # rotor-body component reaching the housing ring (or a yoke component
+    # reaching the shaft) is a structural short-circuit, not an anchor.
+    gap_bridge = bool(rotor_labels & yoke_labels)
+    cross_bridge = bool(
+        gap_bridge
+        or (rotor_labels & housing_labels)
+        or (yoke_labels & shaft_labels)
+    )
+
     anchored = shaft_labels | housing_labels
     island_labels = set(range(1, n_comp + 1)) - anchored
 
@@ -106,8 +138,10 @@ def structural_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
         "structural_components": int(n_comp),
         "floating_islands": int(len(island_labels)),
         "floating_island_fraction": island_volume / max(total, 1),
-        "rotor_anchored": bool(shaft_labels),
-        "stator_anchored": bool(housing_labels),
+        "rotor_anchored": rotor_anchored,
+        "stator_anchored": stator_anchored,
+        "rotor_stator_cross_bridge": cross_bridge,
+        "air_gap_solid_bridge": gap_bridge,
         "anchored_fraction": (total - island_volume) / max(total, 1),
         "min_neck_mm": neck * 1000.0,
     }
@@ -161,39 +195,65 @@ def prune_floating_islands(mf: MaterialField, cfg: MotorConfig3D) -> MaterialFie
 
 
 def coolant_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
-    """Coolant connectivity: trapped voids and open-path fraction.
+    """Coolant connectivity on the DEDICATED coolant material.
 
-    The coolant network must run inlet -> outlet: any air component that
-    is fully enclosed by solid (touches no domain boundary) and is not
-    the main connected coolant body is a trapped void -- powder-removal
-    and pressure-fill failure in manufacture.
+    The coolant network must run inlet -> outlet: a component qualifies as
+    a through-flow path only if it reaches axially beyond BOTH ends of the
+    stator stack (where the inlet/outlet stubs live).  Components fully
+    enclosed by solid that reach neither end are trapped voids -- powder-
+    removal and pressure-fill failure in manufacture.
+
+    Falls back to the "air" material (with a flag) only when no dedicated
+    coolant network exists, e.g. for legacy fields where all voids were
+    one material.
     """
-    air = mf.sdfs.get("air")
-    if air is None:
-        return {"trapped_voids": 0, "coolant_components": 0}
-    void = air.sdf < 0.0
+    coolant = mf.sdfs.get("coolant")
+    if coolant is not None:
+        void = coolant.sdf < 0.0
+        dedicated = True
+    else:
+        air = mf.sdfs.get("air")
+        if air is None:
+            return {"trapped_voids": 0, "coolant_components": 0,
+                    "through_flow_networks": 0, "dedicated_coolant": False}
+        void = air.sdf < 0.0
+        dedicated = False
     if not void.any():
-        return {"trapped_voids": 0, "coolant_components": 0}
+        return {"trapped_voids": 0, "coolant_components": 0,
+                "through_flow_networks": 0, "dedicated_coolant": dedicated}
 
     structure = ndimage.generate_binary_structure(3, 1)
     labels, n_comp = ndimage.label(void, structure=structure)
+    _X, _Y, Z, _r = _grids(cfg)
+    cz = cfg.center[2]
+    hz = cfg.stator_half_length
+    low_end = Z <= (cz - hz + 2.0 * cfg.dz)
+    high_end = Z >= (cz + hz - 2.0 * cfg.dz)
     boundary = np.zeros(cfg.shape, dtype=bool)
     boundary[0, :, :] = boundary[-1, :, :] = True
     boundary[:, 0, :] = boundary[:, -1, :] = True
     boundary[:, :, 0] = boundary[:, :, -1] = True
 
     trapped = 0
-    open_labels = set()
+    through = 0
+    open_components = 0
     for i in range(1, n_comp + 1):
         comp = labels == i
         if (comp & boundary).any():
-            open_labels.add(i)
-        elif comp.sum() >= 100:  # ~85 mm^3: print-blocking pockets only
+            open_components += 1
+        has_low = bool((comp & low_end).any())
+        has_high = bool((comp & high_end).any())
+        if has_low and has_high:
+            through += 1
+        elif not (has_low or has_high) and comp.sum() >= 100:
+            # ~85 mm^3: print-blocking pockets only
             trapped += 1
     return {
         "trapped_voids": int(trapped),
         "coolant_components": int(n_comp),
-        "coolant_open_components": int(len(open_labels)),
+        "coolant_open_components": int(open_components),
+        "through_flow_networks": int(through),
+        "dedicated_coolant": bool(dedicated),
     }
 
 

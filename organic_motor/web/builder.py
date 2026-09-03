@@ -21,8 +21,13 @@ from organic_motor.geometry.export import MATERIAL_COLORS, material_mesh
 from organic_motor.geometry.voxel import VoxelVolume
 
 
-MATERIALS = ("iron", "copper", "pm")
-MATERIAL_LABEL = {"iron": "铁 Iron", "copper": "铜 Copper", "pm": "磁钢 PM"}
+MATERIALS = ("iron", "copper", "pm", "coolant")
+MATERIAL_LABEL = {
+    "iron": "铁 Iron",
+    "copper": "铜 Copper",
+    "pm": "磁钢 PM",
+    "coolant": "冷却液 Coolant",
+}
 
 
 @dataclass
@@ -65,8 +70,14 @@ def _load_volume(npz_path: Path) -> VoxelVolume:
             if "rho_air" in data.files
             else None
         )
+        coolant = (
+            np.asarray(data["rho_coolant"], dtype=np.float32)
+            if "rho_coolant" in data.files
+            else None
+        )
     return VoxelVolume(
-        iron=iron, pm=pm, spacing=spacing, origin=origin, copper=copper, air=air
+        iron=iron, pm=pm, spacing=spacing, origin=origin, copper=copper, air=air,
+        coolant=coolant,
     )
 
 

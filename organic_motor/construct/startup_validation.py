@@ -42,6 +42,7 @@ class StartupResult:
     max_current_A: float
     max_temperature_C: float
     reversal: bool
+    backward_angle_excursion_deg: float
     electrical_cycles: float
     passed: bool
 
@@ -60,9 +61,11 @@ class MultiAngleStartupResult:
     passed: bool = False
     n_angles: int = 0
     settings: dict = field(default_factory=dict)
+    torque_decomposition: dict = field(default_factory=dict)
+    verdicts: dict | None = None
 
     def summary(self) -> dict:
-        return {
+        out = {
             "n_angles": self.n_angles,
             "all_started": self.all_started,
             "any_reversal": self.any_reversal,
@@ -72,6 +75,7 @@ class MultiAngleStartupResult:
             "max_temperature_C": self.max_temperature_C,
             "passed": self.passed,
             "settings": self.settings,
+            "torque_decomposition": self.torque_decomposition,
             "angles": [
                 {
                     "initial_angle_rad": r.initial_angle_rad,
@@ -81,11 +85,21 @@ class MultiAngleStartupResult:
                     "max_current_A": r.max_current_A,
                     "electrical_cycles": r.electrical_cycles,
                     "reversal": r.reversal,
+                    "backward_angle_excursion_deg": r.backward_angle_excursion_deg,
                     "passed": r.passed,
                 }
                 for r in self.results
             ],
         }
+        if self.verdicts is not None:
+            out["verdicts"] = self.verdicts["verdicts"]
+            out["verdict_labels"] = self.verdicts.get("labels", {})
+            out["verdicts_evaluated"] = self.verdicts.get("evaluated", 0)
+            out["verdicts_failed"] = self.verdicts.get("failed", [])
+            # The headline verdict is the six-verdict overall, not the
+            # bare transient: a green spin cannot cover broken topology.
+            out["passed"] = bool(self.verdicts.get("passed", self.passed))
+        return out
 
 
 def run_single_startup(
@@ -152,7 +166,13 @@ def _evaluate_startup(cfg, data, initial_angle, settings,
     mean_torque = float(np.mean(torque))
     max_current = float(np.max(np.abs(currents)))
     max_temp = float(temp.max())
-    reversal = bool(min_speed < -0.05)
+    # Reversal = NET BACKWARD ROTATION beyond one slot pitch (5 mech deg),
+    # not an instantaneous negative speed sample: cogging and current
+    # ripple can jiggle the speed negative at standstill without the
+    # machine actually rotating backwards.
+    excursion = float(np.min(rotor_angle) - rotor_angle[0])
+    excursion_deg = float(np.degrees(excursion))
+    reversal = bool(excursion_deg < -5.0)
     total_electrical = float(cfg.pole_pairs * (rotor_angle[-1] - rotor_angle[0]))
     electrical_cycles = abs(total_electrical) / (2.0 * np.pi)
 
@@ -173,6 +193,7 @@ def _evaluate_startup(cfg, data, initial_angle, settings,
         max_current_A=max_current,
         max_temperature_C=max_temp,
         reversal=reversal,
+        backward_angle_excursion_deg=excursion_deg,
         electrical_cycles=electrical_cycles,
         passed=passed,
     )
@@ -202,6 +223,9 @@ def validate_startup(
     maxwell_maxiter: int | None = None,
     thermal_maxiter: int | None = None,
     electric_maxiter: int | None = None,
+    display_mf=None,
+    display_cfg: MotorConfig3D | None = None,
+    torque_convergence: dict | None = None,
 ) -> MultiAngleStartupResult:
     """Run startup validation from multiple initial rotor angles.
 
@@ -319,6 +343,35 @@ def validate_startup(
     result.max_startup_current_A = max(r.max_current_A for r in result.results)
     result.max_temperature_C = max(r.max_temperature_C for r in result.results)
     result.passed = result.all_started and not result.any_reversal and not result.any_dead_point
+
+    # Torque-decomposition diagnostics (T0 cogging is grid-sensitive: its
+    # dominant harmonic tells artifact (4x mech from Cartesian C4 symmetry)
+    # from true 4-pole cogging (p-th harmonic)).
+    t0 = np.asarray(maps["torque_cogging"], dtype=float)
+    t1 = np.asarray(maps["torques_ph"], dtype=float)
+    t2 = np.asarray(maps["torque_i2_diag"], dtype=float)
+    na = t0.shape[0]
+    period = maps["period"]
+    fft = abs(np.fft.rfft(t0)) * 2.0 / max(na, 1)
+    result.torque_decomposition = {
+        "t0_peak_Nm": float(np.max(np.abs(t0))),
+        "t0_dominant_harmonic_per_period": int(np.argmax(fft[1:]) + 1),
+        "t1_amplitudes_Nm": [float(np.max(np.abs(t1[p]))) for p in range(3)],
+        "t2_diag_amplitudes_Nm": [float(np.max(np.abs(t2[p]))) for p in range(3)],
+        "cross_terms_i_p_i_q": "not solved (documented limitation)",
+    }
+
+    from organic_motor.construct.verdicts import evaluate_verdicts
+
+    if mf is not None or display_mf is not None:
+        topo_mf = mf if mf is not None else display_mf
+        topo_cfg = cfg if mf is not None else display_cfg
+        result.verdicts = evaluate_verdicts(
+            topo_mf, topo_cfg, result,
+            display_mf=display_mf if mf is not None else None,
+            display_cfg=display_cfg if mf is not None else None,
+            torque_convergence=torque_convergence,
+        )
     return result
 
 
@@ -354,19 +407,3 @@ def validate_from_checkpoint(
         cfg, logits, rotor_logits, magnetization,
         n_angles=n_angles, steps=steps,
     )
-
-
-def constructed_design_from_mf(mf, cfg: MotorConfig3D, mag=None):
-    """Convert a built MaterialField (+ magnetization) to powered-transient inputs."""
-    from organic_motor.geometry.domain3d import domain_masks3d
-
-    densities = mf.to_densities()
-    logits = np.stack([
-        densities["air"], densities["iron"], densities["copper"], densities["pm"],
-    ]).astype(np.float32) * 10.0 - 5.0
-    rotor_logits = (
-        np.asarray(domain_masks3d(cfg)["rotor_design"], dtype=np.float32) * 10.0 - 5.0
-    )
-    if mag is None:
-        mag = np.zeros((3,) + cfg.shape, dtype=np.float32)
-    return jnp.asarray(logits), jnp.asarray(rotor_logits), jnp.asarray(mag)

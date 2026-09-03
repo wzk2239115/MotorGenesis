@@ -368,7 +368,9 @@ class Winding3D:
 
     Each coil is a continuous copper loop: two straight axial sections in
     slots on opposite sides of a pole, connected by end-turn arcs at the
-    stator ends.
+    stator ends.  The arcs use a CLOSED-FORM arc-tube SDF (distance to a
+    circular arc segment), not sampled bead capsules -- beads alias into
+    disconnected rings when the bead spacing approaches the cell size.
 
     Electrical topology (phase insulation by construction): slots are
     assigned to phases A/C'/B rotationally, and each slot's conductors live
@@ -379,6 +381,12 @@ class Winding3D:
     through shared slot conductors, so each phase forms one connected
     network per layer group (parallel paths), exactly like a real lap
     winding.
+
+    During construction every copper voxel is tagged with its phase in
+    ``mf.metadata["winding_phase_owner"]`` (int8, -1 = none, 0/1/2 = A/B/C)
+    INCLUDING end turns and terminals, so the connectivity audit checks the
+    real electrical network instead of a slot-sector clip that would delete
+    exactly the copper that connects the coil sides.
     """
 
     cfg: MotorConfig3D
@@ -408,7 +416,7 @@ class Winding3D:
             wr = self.wire_radius
         else:
             # 35% of layer spacing: inter-layer insulation gap is 30% of
-            # the spacing (~0.65mm), resolvable at display resolution and
+            # the spacing (~1.3mm), resolvable at display resolution and
             # realistic for real phase insulation.
             wr = 0.35 * (r_wo - r_wi) / self.n_layers
 
@@ -422,6 +430,7 @@ class Winding3D:
 
         X, Y, Z, r, theta = _angles_of(cfg)
         copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+        phase_sdf = np.full((3,) + cfg.shape, 1e9, dtype=np.float32)
         S = max(1, self.strands_per_slot)
 
         for coil in range(self.n_slots):
@@ -431,6 +440,13 @@ class Winding3D:
             theta_b = slot_b * slot_pitch
             d_ab = np.mod(theta_b - theta_a + np.pi, 2 * np.pi) - np.pi
             phase = int(phase_of_slot[coil])
+            coil_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+            # Arc geometry (shared by every strand of this coil): a tube of
+            # radius wr around the circular arc from theta_as to theta_bs at
+            # radius r_mid, in the plane z = cz +/- (hz + 0.5*wr) so it
+            # overlaps the axial bars by half a wire radius.
+            theta_mid = theta_a + 0.5 * d_ab
+            half_span = 0.5 * abs(d_ab)
 
             for layer in self._slot_layers(phase):
                 r_mid = r_wi + (layer + 0.5) * (r_wo - r_wi) / self.n_layers
@@ -448,27 +464,36 @@ class Winding3D:
                     radial_a = np.sqrt((r - r_mid) ** 2 + (r_mid * d_ta) ** 2)
                     radial_b = np.sqrt((r - r_mid) ** 2 + (r_mid * d_tb) ** 2)
                     axial_in = np.maximum(np.abs(Z - cz) - hz, 0.0)
-                    copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_a ** 2 + axial_in ** 2) - wr)
-                    copper_sdf = np.minimum(copper_sdf, np.sqrt(radial_b ** 2 + axial_in ** 2) - wr)
+                    coil_sdf = np.minimum(coil_sdf, np.sqrt(radial_a ** 2 + axial_in ** 2) - wr)
+                    coil_sdf = np.minimum(coil_sdf, np.sqrt(radial_b ** 2 + axial_in ** 2) - wr)
 
+                    # Closed-form end-turn arc tube: distance to the arc
+                    # segment between the two coil sides at radius r_mid.
+                    # d_arc = 0 inside the angular span, otherwise the
+                    # arc-length distance to the nearest span end.
+                    d_mid = np.mod(theta - (theta_mid + off) + np.pi, 2 * np.pi) - np.pi
+                    arc_gap = np.maximum(np.abs(d_mid) - half_span, 0.0) * r_mid
                     for sign in (+1, -1):
-                        z_base = cz + sign * hz
-                        # Arc sample spacing <= 1.2*wire radius so adjacent bead
-                        # capsules overlap and the end turn stays continuous.
-                        arc_length = abs(d_ab) * r_mid + self.end_turn_rise
-                        n_arc = max(16, int(np.ceil(arc_length / (1.2 * wr))))
-                        for si in range(n_arc):
-                            s = (si + 0.5) / n_arc
-                            theta_s = theta_as + s * d_ab
-                            z_s = z_base + sign * self.end_turn_rise * np.sin(np.pi * s)
-                            d_ts = np.mod(theta - theta_s + np.pi, 2 * np.pi) - np.pi
-                            dist_s = np.sqrt(
-                                (r - r_mid) ** 2 + (Z - z_s) ** 2 + (r_mid * d_ts) ** 2
-                            )
-                            copper_sdf = np.minimum(copper_sdf, dist_s.astype(np.float32) - wr)
+                        z_arc = cz + sign * (hz + 0.5 * wr)
+                        arc_dist = np.sqrt(
+                            (r - r_mid) ** 2 + (Z - z_arc) ** 2 + arc_gap ** 2
+                        )
+                        coil_sdf = np.minimum(coil_sdf, (arc_dist - wr).astype(np.float32))
+
+            copper_sdf = np.minimum(copper_sdf, coil_sdf)
+            phase_sdf[phase] = np.minimum(phase_sdf[phase], coil_sdf)
+
+        # Exact per-phase voxel ownership INCLUDING end turns and terminals:
+        # the audit checks the real electrical network, not a slot-sector
+        # clip (which would delete exactly the copper that connects the
+        # coil sides).  phase_sdf also gives an exact cross-short test.
+        phase_owner = np.argmin(phase_sdf, axis=0).astype(np.int8)
+        phase_owner[copper_sdf >= 0.0] = -1
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin), "copper", priority=True)
         mf.metadata["winding_netlist"] = netlist
+        mf.metadata["winding_phase_owner"] = phase_owner
+        mf.metadata["winding_phase_sdf"] = phase_sdf
         return mf
 
 
@@ -548,25 +573,35 @@ class FieldDrivenCoolingJacket:
 
 @dataclass
 class HelicalCoolingChannels:
-    """Spine-driven helical coolant voids with field-driven wall thickness.
+    """A CONTINUOUS spiral coolant channel with explicit inlet and outlet.
 
-    LEAP 71 ``functional void first``: the coolant path is defined as a swept
-    void along a helical spine, then the channel wall grows around it as a
-    shell whose thickness follows the local Joule heat.  This replaces the
-    uniform gyroid with a self-organising cooling network that thickens where
-    the winding runs hot.
+    The old per-z-slice "distance to the helix at the same z" was wrong by
+    a factor of sqrt(1+(R*k)^2) ~ 30 for a real cooling pitch: consecutive
+    slices jumped a full channel diameter circumferentially, so the void
+    shattered into the disconnected rings seen in the display, and the
+    wall around it into hundreds of structural fragments.  The true 3-D
+    distance to a helix of slope k = dtheta/dz at radius R is
 
-    The wall is ``shell(void, t)`` where ``t = f(heat)`` -- the canonical
-    LEAP 71 ``Offset`` generation operation with a field-driven distance.
+        d_min = R * |wrap(theta - k z)| / sqrt(1 + (R k)^2)
+
+    (closed form of the minimisation over the axial coordinate), which
+    makes the channel a single continuous screw thread.
+
+    The channel runs bottom inlet -> top outlet through ``n_turns`` turns
+    (pitch derived from the channel diameter plus wall), with axial stubs
+    at both ends so the coolant network is open to the outside at TWO
+    distinct points.  The void is stored as a dedicated ``coolant``
+    material (not "air"), so the coolant graph is auditable on its own.
     """
 
     cfg: MotorConfig3D
-    n_channels: int = 4
-    n_turns: float = 3.0
+    n_channels: int = 1  # kept for API compat; one spiral is the design
+    n_turns: float = 0.0  # 0 = auto from pitch
     channel_radius: float = 0.004
     min_wall: float = 0.0015
     max_wall: float = 0.0035
     jacket_radius: float = 0.0  # default: R_design + 0.004
+    stub_length: float = 0.006
     heat_field: object | None = None
 
     def build(self, mf: MaterialField) -> MaterialField:
@@ -579,20 +614,37 @@ class HelicalCoolingChannels:
         R = self.jacket_radius or (cfg.R_design + 0.004)
 
         X, Y, Z, r, theta = _angles_of(cfg)
-        z_norm = (Z - cz) / (2.0 * hz)
-        theta_helix = 2.0 * np.pi * self.n_turns * z_norm
+        z_bot = cz - hz
+        z_top = cz + hz
+        span = z_top - z_bot
+        if self.n_turns > 0.0:
+            n_turns = self.n_turns
+        else:
+            pitch = 2.0 * self.channel_radius + 2.0 * self.min_wall
+            n_turns = float(np.clip(round(span / pitch), 2.0, 8.0))
+        k = 2.0 * np.pi * n_turns / span  # helix slope dtheta/dz
+        theta_in = 0.0
+        theta_helix = k * (Z - z_bot) + theta_in
 
-        d_theta_min = np.full_like(r, 1e9, dtype=np.float32)
-        for i in range(self.n_channels):
-            offset_i = 2.0 * np.pi * i / self.n_channels
-            dt = np.mod(theta - theta_helix - offset_i + np.pi, 2.0 * np.pi) - np.pi
-            d_theta_min = np.minimum(d_theta_min, np.abs(dt))
-
-        arc_dist = R * d_theta_min
-        radial_dist = r - R
-        dist_to_spine = np.sqrt(radial_dist ** 2 + arc_dist ** 2)
+        # True 3-D distance to the helical spine (see class docstring).
+        d_theta = np.mod(theta - theta_helix + np.pi, 2 * np.pi) - np.pi
+        d_arc = R * np.abs(d_theta) / np.sqrt(1.0 + (R * k) ** 2)
+        dist_to_spine = np.sqrt((r - R) ** 2 + d_arc ** 2)
         void_sdf = (dist_to_spine - self.channel_radius).astype(np.float32)
 
+        # Axial inlet (bottom, at the spiral start angle) and outlet (top,
+        # at the angle the spiral reaches after n_turns turns).
+        theta_out = theta_in + 2.0 * np.pi * n_turns
+        for sign, z_open, z_stub in ((+1, z_top, z_top + 0.5 * self.stub_length),
+                                     (-1, z_bot, z_bot - 0.5 * self.stub_length)):
+            th = theta_out if sign > 0 else theta_in
+            d_th = np.mod(theta - th + np.pi, 2 * np.pi) - np.pi
+            stub_radial = np.sqrt((r - R) ** 2 + (R * d_th) ** 2)
+            stub_axial = np.abs(Z - z_stub) - 0.5 * self.stub_length
+            stub_sdf = np.maximum(stub_radial - self.channel_radius, stub_axial)
+            void_sdf = np.minimum(void_sdf, stub_sdf.astype(np.float32))
+
+        # Field-driven wall: shell(void, t) with t = f(local Joule heat).
         q = self.heat_field
         if q is None:
             q = joule_heat(cfg)
@@ -603,7 +655,7 @@ class HelicalCoolingChannels:
         wall_sdf = np.maximum(void_sdf - wall_t, -void_sdf)
 
         mf.add(SDFVoxelField(sdf=wall_sdf, spacing=cfg.spacing, origin=cfg.origin), "iron", priority=True)
-        mf.add(SDFVoxelField(sdf=void_sdf, spacing=cfg.spacing, origin=cfg.origin), "air", priority=True)
+        mf.add(SDFVoxelField(sdf=void_sdf, spacing=cfg.spacing, origin=cfg.origin), "coolant", priority=True)
         return mf
 
 

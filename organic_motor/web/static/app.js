@@ -178,13 +178,14 @@ const MATERIAL_COLORS = {
   iron: "#5c748a",
   copper: "#d6662b",
   pm: "#cd2d48",
+  coolant: "#408cde",
 };
-const materialVisible = { iron: true, copper: true, pm: true };
+const materialVisible = { iron: true, copper: true, pm: true, coolant: true };
 
 function syncMaterialToggles() {
   const host = $("materialToggles");
   host.innerHTML = "";
-  for (const mat of ["iron", "copper", "pm"]) {
+  for (const mat of ["iron", "copper", "pm", "coolant"]) {
     const present = materialNodes.has(mat);
     const row = document.createElement("label");
     row.className = "toggle";
@@ -202,7 +203,7 @@ function syncMaterialToggles() {
   }
 }
 function labelOf(m) {
-  return { iron: "铁 Iron", copper: "铜 Copper", pm: "磁钢 PM" }[m] || m;
+  return { iron: "铁 Iron", copper: "铜 Copper", pm: "磁钢 PM", coolant: "冷却 Coolant" }[m] || m;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,12 +274,13 @@ async function loadStartupPanel(run) {
   const panel = $("startupPanel");
   const verdict = $("startupVerdict");
   const anglesDiv = $("startupAngles");
+  const verdictsDiv = $("startupVerdicts");
   try {
     const res = await fetch(`/api/runs/${encodeURIComponent(run)}/startup`);
     if (!res.ok) { panel.style.display = "none"; return; }
     const s = await res.json();
     panel.style.display = "";
-    verdict.textContent = s.passed ? "✅ 通过 (仿真层面可旋转)" : "❌ 未通过";
+    verdict.textContent = s.passed ? "✅ 通过 (六项验证)" : "❌ 未通过";
     verdict.style.color = s.passed ? "#7ee08a" : "#e08a7e";
     anglesDiv.innerHTML = (s.angles || []).map((a) => {
       const cls = a.passed ? "pass" : "fail";
@@ -286,6 +288,39 @@ async function loadStartupPanel(run) {
       return `<div class="ang ${cls}"><span>θ₀ ${Math.round(a.initial_angle_rad * 180 / Math.PI)}°</span>` +
              `<span>${a.final_speed_rad_s >= 0 ? "+" : ""}${a.final_speed_rad_s.toFixed(1)} rad/s (${rpm} rpm)</span></div>`;
     }).join("");
+    // Six independent verdicts: a green spin cannot cover broken topology.
+    if (verdictsDiv && s.verdicts) {
+      const marks = { pass: "✅", fail: "❌", none: "➖" };
+      verdictsDiv.innerHTML = Object.entries(s.verdicts).map(([key, v]) => {
+        const cls = v.passed === true ? "pass" : v.passed === false ? "fail" : "none";
+        const label = (s.verdict_labels && s.verdict_labels[key]) || key;
+        let extra = "";
+        if (key === "manufacturing" && v.detail && v.detail.not_evaluated) {
+          extra = `<div class="vnote">未评估: ${v.detail.not_evaluated.join(", ")}</div>`;
+        } else if (key === "mesh_convergence" && v.detail) {
+          const d = v.detail;
+          if (d.torque) {
+            extra = `<div class="vnote">T1 Δ${d.torque.t1_amplitude_change_pct?.toFixed?.(1)}%, ` +
+                    `T0 Δ${d.torque.t0_rms_change_pct?.toFixed?.(1)}% (${d.physics_shape?.join("×")} → ${d.fine_shape?.join("×")})</div>`;
+          } else if (d.topology_physics && d.topology_display) {
+            extra = `<div class="vnote">拓扑: 铜 ${d.topology_physics.copper_components} vs ` +
+                    `${d.topology_display.copper_components} 网, 相 ${JSON.stringify(d.topology_display.phase_components)}</div>`;
+          }
+        } else if (key === "winding" && v.detail && v.detail.expected_components) {
+          extra = `<div class="vnote">相连通块 ${JSON.stringify(v.detail.expected_components)} · ` +
+                  `最小相间隙 ${(v.detail.min_phase_gap_mm || 0).toFixed(2)} mm</div>`;
+        } else if (key === "cooling" && v.detail) {
+          extra = `<div class="vnote">贯通流道 ${v.detail.through_flow_networks ?? "?"} · 死腔 ${v.detail.trapped_voids ?? "?"}</div>`;
+        } else if (key === "structure" && v.detail) {
+          extra = `<div class="vnote">浮岛 ${v.detail.floating_islands} · 最小颈 ${((v.detail.min_neck_mm) || 0).toFixed(2)} mm</div>`;
+        } else if (key === "electromechanical" && v.detail) {
+          extra = `<div class="vnote">${v.detail.n_angles ?? "?"} 初始角 · 最低末速 ${(v.detail.min_final_speed_rad_s || 0).toFixed(1)} rad/s</div>`;
+        }
+        return `<div class="verdict ${cls}"><span class="mark">${marks[cls]}</span>` +
+               `<span class="vlabel">${label}</span>${extra}</div>`;
+      }).join("") +
+      `<div class="vnote">已评估 ${s.verdicts_evaluated ?? "?"}/6 · 失败: ${s.verdicts_failed?.length ? s.verdicts_failed.join(", ") : "无"}</div>`;
+    }
   } catch {
     panel.style.display = "none";
   }

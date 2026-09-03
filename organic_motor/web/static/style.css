@@ -116,6 +116,23 @@ footer { margin-top: auto; padding-top: 6px; }
 .startup-angles .ang.pass { color: #7ee08a; }
 .startup-angles .ang.fail { color: #e08a7e; }
 
+.verdicts { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.verdicts .verdict {
+  display: grid; grid-template-columns: 18px 1fr; gap: 2px 4px;
+  font-size: 11px; color: var(--muted);
+  padding: 3px 4px; border-radius: 4px;
+  border: 1px solid #22333e; background: rgba(20, 32, 40, 0.5);
+}
+.verdicts .verdict .mark { text-align: center; }
+.verdicts .verdict .vlabel { color: var(--fg); }
+.verdicts .verdict.pass .vlabel { color: #7ee08a; }
+.verdicts .verdict.fail .vlabel { color: #e08a7e; }
+.verdicts .verdict.none .vlabel { color: #c8b460; }
+.verdicts .vnote {
+  grid-column: 2; font-size: 10px; color: var(--muted);
+}
+.verdicts > .vnote { grid-column: 1; margin-top: 2px; color: var(--muted); }
+
 @media (max-width: 720px) {
   #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   #sidebar { max-height: 42vh; }

@@ -152,21 +152,39 @@ def housing_open_area(mf: MaterialField, cfg: MotorConfig3D, threshold: float = 
 
 
 def end_face_occlusion(mf: MaterialField, cfg: MotorConfig3D, threshold: float = 0.3) -> dict:
-    """Fraction of the front end face blocked by solid iron."""
+    """Fraction of the front END-CAP face blocked by solid iron.
+
+    Measured on the axial slice through the end caps (where
+    ``ShaftAndBearings`` places them), not on the outer domain boundary:
+    the box wall is tens of millimetres beyond the machine, so a boundary
+    measurement reports ~zero while the actual machine face is largely
+    covered.
+    """
     iron = _material_inside(mf, "iron")
-    nx, ny, nz = cfg.shape
-    front = iron[:, :, -1]
-    cx, cy = cfg.center[0], cfg.center[1]
+    cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
     dx, dy = cfg.spacing[:2]
     ox, oy = cfg.origin[:2]
-    x = ox + dx * np.arange(nx, dtype=np.float32)
-    y = oy + dy * np.arange(ny, dtype=np.float32)
+    x = ox + dx * np.arange(cfg.shape[0], dtype=np.float32)
+    y = oy + dy * np.arange(cfg.shape[1], dtype=np.float32)
     X, Y = np.meshgrid(x, y, indexing="ij")
     r = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
-    motor_mask = r < cfg.R_design + 0.008
+
+    # End-cap placement mirrors ShaftAndBearings defaults.
+    bearing_width = 0.004
+    cap_thickness = 0.003
+    z_cap = cz + (cfg.rotor_half_length + cfg.axial_airgap + bearing_width
+                  + cap_thickness + 0.5 * cap_thickness + 0.004)
+    r_cap = cfg.R_design + 0.006
+    oz, dz = cfg.origin[2], cfg.dz
+    k = int(np.clip(round((z_cap - oz) / dz), 0, cfg.shape[2] - 1))
+    front = iron[:, :, k]
+    motor_mask = r < r_cap
     total = motor_mask.sum()
     blocked = (front & motor_mask).sum()
-    return {"end_face_occlusion": float(blocked) / max(float(total), 1.0)}
+    return {
+        "end_face_occlusion": float(blocked) / max(float(total), 1.0),
+        "end_face_slice_z_mm": float(oz + dz * k) * 1000.0,
+    }
 
 
 def compute_geometry_metrics(mf: MaterialField, cfg: MotorConfig3D) -> dict:

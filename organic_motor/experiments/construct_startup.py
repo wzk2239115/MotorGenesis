@@ -2,12 +2,17 @@
 
 Level-3 verification: from multiple initial rotor angles, with a
 current-limited drive and a load, does the motor accelerate forward
-without reversal, overcurrent or overtemperature?
+without reversal, overcurrent or overtemperature -- AND is the machine
+behind the transient actually valid (winding / cooling / structure /
+manufacturing / mesh convergence)?
 
-Builds the field-driven motor at physics resolution, extracts the
-electrical parameters (R, L, flux linkage) from the actual geometry,
-converts the design to powered-transient inputs and runs the multi-angle
-startup suite.
+The transient uses the full T0/T1/T2 torque decomposition (zero-current
+cogging + linear PMxI + self-I^2), so a green spin can no longer hide an
+unconquerable cogging torque.  Topology verdicts are evaluated on the
+DISPLAY-resolution build (where the geometry resolves) and cross-checked
+against the physics grid; ``--convergence`` additionally measures
+quantitative torque stability between the physics grid and a 96^3
+refinement.
 
 Run with::
 
@@ -51,14 +56,88 @@ def parser() -> argparse.ArgumentParser:
                     help="Maxwell CG iterations (torque converges ~300)")
     ap.add_argument("--torque-radius", type=float, default=0.0287,
                     help="Maxwell stress surface radius [m] (must be in the air gap)")
+    ap.add_argument("--shape", type=_parse_shape, default=None,
+                    help="physics grid Nx,Ny,Nz (default 56,56,36)")
+    ap.add_argument("--convergence", action="store_true",
+                    help="measure quantitative torque convergence against a "
+                         "96x96x58 refinement (adds ~45 min)")
     ap.add_argument("--out", type=Path, default=Path("startup_out"))
     return ap
 
 
+def _parse_shape(text: str) -> tuple[int, int, int]:
+    values = tuple(int(v) for v in text.split(","))
+    if len(values) != 3 or min(values) < 3:
+        raise argparse.ArgumentTypeError("shape must be Nx,Ny,Nz with values >= 3")
+    return values  # type: ignore[return-value]
+
+
+def _torque_convergence_check(cfg, mf, mag, settings, map_angles, fine_shape):
+    """T0 + phase-A T1 amplitude change between the physics grid and a refinement.
+
+    Returns the percent changes; the full 3-phase map set at the finer grid
+    is not needed to establish (non-)convergence of the dominant torque
+    terms.
+    """
+    from dataclasses import replace
+
+    import jax.numpy as jnp
+
+    from organic_motor.construct.realize import realize
+    from organic_motor.optimization.objective3d import forward3d_fields
+    from organic_motor.experiments.motor3d_powered import compute_powered_maps
+
+    def amplitudes(shape):
+        g = replace(cfg, shape=shape)
+        motor = field_driven_motor(g)
+        m = motor.build()
+        # Magnetization at THIS grid's resolution (a physics-grid array
+        # would not match a refined build).
+        mag_g = motor.magnetization()
+        fields, _mag = realize(m, g)
+        netlist = m.metadata.get("winding_netlist")
+        belts = None
+        if netlist is not None:
+            belts = jnp.asarray(netlist.phase_belts_3d(g))
+
+        def phase_solver(single, angle, amplitudes_arg):
+            return forward3d_fields(
+                g, fields, mag_g, [angle], single, phase_amplitudes=amplitudes_arg,
+            )
+
+        maps = compute_powered_maps(
+            g, None, None, mag_g, map_angles, settings,
+            phase_solver=phase_solver, base_belts=belts,
+            include_mechanics=False, keep_volumes=False,
+            phases=(0,),  # phase-A T1 + T0 suffice for the convergence gate
+        )
+        t0 = np.asarray(maps["torque_cogging"], dtype=float)
+        t1 = np.asarray(maps["torques_ph"], dtype=float)
+        return {
+            "t0_rms": float(np.sqrt(np.mean(t0 ** 2))),
+            "t1_phase0_amp": float(np.max(np.abs(t1[0]))),
+        }
+
+    coarse = amplitudes(cfg.shape)
+    fine = amplitudes(fine_shape)
+    return {
+        "physics_shape": list(cfg.shape),
+        "fine_shape": list(fine_shape),
+        "t0_rms_physics_Nm": coarse["t0_rms"],
+        "t0_rms_fine_Nm": fine["t0_rms"],
+        "t0_rms_change_pct": 100.0 * (fine["t0_rms"] - coarse["t0_rms"]) / max(coarse["t0_rms"], 1e-9),
+        "t1_amplitude_physics_Nm": coarse["t1_phase0_amp"],
+        "t1_amplitude_fine_Nm": fine["t1_phase0_amp"],
+        "t1_amplitude_change_pct": 100.0 * (fine["t1_phase0_amp"] - coarse["t1_phase0_amp"])
+        / max(coarse["t1_phase0_amp"], 1e-9),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = parser().parse_args(argv)
+    shape = _parse_shape(args.shape) if args.shape else (56, 56, 36)
     cfg = MotorConfig3D(
-        shape=(56, 56, 36),
+        shape=shape,
         excitation_mode="impressed",
         filt_radius=0.0,
         projection_beta=0.0,
@@ -87,6 +166,29 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     logits, rotor_logits, magnetization = constructed_design_from_mf(mf, cfg, mag)
 
+    # Display-resolution build: topology verdicts gate on THIS grid (where
+    # the geometry is actually resolved), with the physics grid reported
+    # alongside -- the discrepancy feeds the mesh-convergence verdict.
+    from dataclasses import replace
+
+    display_cfg = replace(cfg, shape=(160, 160, 96))
+    print(f"[startup] display build {display_cfg.shape} for topology verdicts...")
+    display_mf = field_driven_motor(display_cfg).build()
+
+    torque_convergence = None
+    if args.convergence:
+        from organic_motor.experiments.motor3d_powered import Powered3DSettings
+
+        conv_settings = Powered3DSettings()
+        period = 2.0 * np.pi / cfg.pole_pairs
+        map_angles = np.arange(args.map_angles) * period / args.map_angles
+        print("[startup] torque-convergence refinement (96x96x58, ~45 min)...")
+        torque_convergence = _torque_convergence_check(
+            cfg, mf, mag, conv_settings, map_angles, (96, 96, 58),
+        )
+        print(f"  T1 amplitude change: {torque_convergence['t1_amplitude_change_pct']:+.1f}%")
+        print(f"  T0 rms change      : {torque_convergence['t0_rms_change_pct']:+.1f}%")
+
     print(f"[startup] running {args.angles} initial angles, "
           f"{args.steps} steps x {args.dt*1e3:.1f} ms "
           f"(= {args.steps*args.dt*1e3:.0f} ms), I_limit = {args.current_limit} A")
@@ -105,6 +207,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         maxwell_maxiter=args.maxwell_iters,
         thermal_maxiter=160,
         electric_maxiter=80,
+        display_mf=display_mf,
+        display_cfg=display_cfg,
+        torque_convergence=torque_convergence,
     )
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -113,8 +218,23 @@ def main(argv: Sequence[str] | None = None) -> None:
         json.dumps(summary, indent=2, default=str), encoding="utf-8"
     )
     print()
-    verdict = "CAN SPIN (simulation)" if result.passed else "CANNOT SPIN YET (simulation)"
+    print(f"[startup] torque decomposition: "
+          f"T0 peak {result.torque_decomposition.get('t0_peak_Nm', 0):.4f} Nm "
+          f"(harmonic {result.torque_decomposition.get('t0_dominant_harmonic_per_period', 0)}x/period), "
+          f"T1 amps {[round(a, 4) for a in result.torque_decomposition.get('t1_amplitudes_Nm', [])]} Nm")
+    if result.verdicts is not None:
+        from organic_motor.construct.verdicts import format_verdict_table
+
+        print("[startup] six independent verdicts:")
+        print(format_verdict_table(result.verdicts))
+        # The headline verdict is the SIX-verdict overall: a green spin
+        # must not cover broken topology or non-converged discretisation.
+        overall = bool(result.verdicts.get("passed", False))
+    else:
+        overall = result.passed
+    verdict = "VALID MOTOR (six-verdict)" if overall else "NOT VALID YET (six-verdict)"
     print(f"[startup] verdict: {verdict}")
+    print(f"  transient spins   : {result.passed}")
     print(f"  all angles started : {result.all_started}")
     print(f"  any reversal       : {result.any_reversal}")
     print(f"  min final speed    : {result.min_final_speed_rad_s:.2f} rad/s "

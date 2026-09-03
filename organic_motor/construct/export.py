@@ -50,6 +50,9 @@ def save_checkpoint(
         "origin": np.asarray(cfg.origin, dtype=np.float32),
         "step": np.asarray(step, dtype=np.int32),
     }
+    coolant = mf.sdfs.get("coolant")
+    if coolant is not None:
+        arrays["rho_coolant"] = coolant.to_density()
     if magnetization is not None:
         arrays["magnetization"] = np.asarray(magnetization, dtype=np.float32)
     if metrics:
