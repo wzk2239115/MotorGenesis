@@ -116,17 +116,19 @@ def run_single_startup(
     )
 
     if maps is None:
-        solver = None
+        maps_kwargs = {"include_mechanics": False}
         if fields is not None:
             realized = fields
-            belts = phase_belts_override
 
-            def solver(cfg_, _lo, _rl, mg, angles_, temp_):
-                return forward3d_fields(cfg_, realized, mg, angles_, belts)
+            def phase_solver(single, angle):
+                return forward3d_fields(cfg, realized, magnetization, [angle], single)
 
+            maps_kwargs["phase_solver"] = phase_solver
+            if phase_belts_override is not None:
+                maps_kwargs["base_belts"] = phase_belts_override
         maps = compute_powered_maps(
             cfg, logits, rotor_logits, magnetization,
-            angles_map, settings, forward_solver=solver,
+            angles_map, settings, **maps_kwargs,
         )
     data = run_powered_transient(maps, settings, cfg, initial_angle)
     return _evaluate_startup(cfg, data, initial_angle, settings,
@@ -271,17 +273,14 @@ def validate_startup(
                 phase_belts_override = jnp.asarray(netlist.phase_belts_3d(cfg))
 
     from organic_motor.experiments.motor3d_powered import compute_powered_maps
-    solver = None
-    if fields is not None:
-        realized = fields
-        belts = phase_belts_override
 
-        def solver(cfg_, _lo, _rl, mg, angles_, temp_):
-            return forward3d_fields(cfg_, realized, mg, angles_, belts)
+    def phase_solver(single, angle):
+        return forward3d_fields(cfg, fields, magnetization, [angle], single)
 
     maps = compute_powered_maps(
         cfg, logits, rotor_logits, magnetization,
-        map_angles, settings, forward_solver=solver,
+        map_angles, settings, phase_solver=phase_solver,
+        base_belts=phase_belts_override,
         include_mechanics=False,
     )
     for angle in initial_angles:

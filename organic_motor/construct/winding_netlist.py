@@ -106,27 +106,35 @@ class CoilNetlist:
         return coils
 
     def _slot_phase(self, slot: int) -> int:
-        poles_total = 2 * self.pole_pairs
-        slots_per_pole = self.n_slots / poles_total
-        slots_per_phase = slots_per_pole / self.n_phases
-        belt = int(slot / slots_per_phase) % self.n_phases
-        return belt
+        """Phase owning a slot: argmax |cos(p*theta_slot - phi_p)|.
+
+        The standard 60-degree phase-belt rule, IDENTICAL to the solver's
+        analytic ``_phase_belts`` at slot centres: around the machine the
+        phases run A, C', B, A', C, B' ...  With the solver convention
+        ``electrical_angle = +p*theta`` and currents cos(elec - phi_p),
+        this spatial sequence produces a FORWARD-rotating MMF (all three
+        layers' fundamentals align: alpha_p - phi_p = 0).
+        """
+        theta = slot * 2.0 * np.pi / self.n_slots
+        best_phase, best_abs = 0, -1.0
+        for p in range(self.n_phases):
+            c = abs(np.cos(self.pole_pairs * theta - p * 2.0 * np.pi / self.n_phases))
+            if c > best_abs:
+                best_abs, best_phase = c, p
+        return best_phase
 
     def _slot_polarity(self, slot: int, layer: int) -> int:
-        """Coil-side sign at (slot, layer): the standard 12s4p winding table.
+        """Coil-side sign at (slot, layer): sign of the owning cosine.
 
-        Phases occupy slots in sequence (A, B, C, A, ...) but each phase's
-        entry polarity follows a phase-shifted cosine, so the three layers'
-        spatial MMF fundamentals sum to a PURE forward-rotating wave
-        (forward phasors {0,0,0} elec, backward {0,+120,-120} summing to
-        zero).  With naive pole-parity signs the backward wave dominates
-        and the synchronous torque collapses to a zero-mean oscillation.
+        The sign follows the phase belt's own cosine (the winding-table
+        entry polarity), not pole parity -- pole-parity signs flip one
+        phase globally and inject a negative-sequence component that
+        collapses the torque.  All layers of a slot share the polarity:
+        they are parallel paths of the same coil.
         """
         theta = slot * 2.0 * np.pi / self.n_slots
         phase = self._slot_phase(slot)
-        # A -> 0, B -> 4*pi/3, C -> 2*pi/3 (the winding-table entry angles)
-        psi = ((2 * phase) % self.n_phases) * 2.0 * np.pi / self.n_phases
-        c = np.cos(self.pole_pairs * theta - psi)
+        c = np.cos(self.pole_pairs * theta - phase * 2.0 * np.pi / self.n_phases)
         return 1 if c >= 0.0 else -1
 
     def slot_phase_assignment(self) -> np.ndarray:
@@ -179,13 +187,16 @@ class CoilNetlist:
 
         belts = np.zeros((3, nx, ny, nz), dtype=np.float32)
         for ph in range(3):
-            # A radial layer hosts conductors of exactly one phase
-            # (Winding3D._slot_layers), so the belt is that annular layer.
-            # The z-range is NOT restricted here: terminal conduction needs
-            # the full copper network, and the impressed source applies its
-            # own slot-region mask where axial currents are physical.
+            # Discrete SLOT SECTORS of this phase on its own radial layer:
+            # (a) end-turn arc copper lives BETWEEN slots and belongs to no
+            #     sector, so the z-averaged conductor cannot pollute other
+            #     angular positions with spurious axial current;
+            # (b) the sectors are z-UNIFORM, so the impressed Jz columns
+            #     stay divergence-free (div J = dJz/dz = 0);
+            # (c) the sector combs reproduce the analytic phase belts at
+            #     slot centres, giving the forward-rotating MMF.
             layer_owns = (layer_idx % self.n_phases) == ph
-            mask2d = in_annulus & layer_owns
+            mask2d = in_annulus & layer_owns & (phase_grid == ph)
             belts[ph] = np.broadcast_to(
                 np.where(mask2d, pol_grid, 0.0)[..., None], (nx, ny, nz)
             )

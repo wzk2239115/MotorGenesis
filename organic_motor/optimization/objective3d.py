@@ -129,16 +129,18 @@ def three_phase_impressed_source3d(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return total and per-phase impressed ``Jz`` fields in A/m².
 
-    Copper is averaged axially and rebroadcast, making every phase current
-    exactly constant along z.  Opposite coil sides are normalized to equal
-    discrete current, hence each phase has zero net current.
+    Copper is averaged axially and rebroadcast over the FULL box height,
+    making every phase current exactly constant along z -- axial current
+    columns closed through the box end faces, hence ``div(J) = 0``
+    EXACTLY (a solenoidal impressed source; severing the columns at the
+    stack ends breaks current continuity and the Coulomb-gauge penalty
+    then absorbs most of the armature field).
 
-    The source is restricted to the SLOT region (``|z| <= stack/2``): the
-    end-turn arcs carry circumferential current, and forcing an axial Jz on
-    them creates a spurious MMF that cancels the slot currents.  This is
-    the classical machine assumption (end-turn leakage neglected).  The
-    positive/negative normalisation sums use the mid-plane slice, where the
-    winding always has conductor, rather than the z = 0 grid plane.
+    The angular restriction to discrete slot sectors (from the netlist
+    belts) keeps end-turn copper from injecting axial current at wrong
+    angles.  Positive/negative coil sides are normalized to equal
+    discrete current via MID-plane sums (the z = 0 grid plane lies
+    outside all geometry).
     """
     belts = _phase_belts(cfg, phase_belts_override)
     conductor = jnp.broadcast_to(
@@ -150,10 +152,6 @@ def three_phase_impressed_source3d(
         electrical_angle
         - jnp.asarray((0.0, 2.0 * jnp.pi / 3.0, 4.0 * jnp.pi / 3.0))
     )
-    _, _, Z = meshgrid3d(cfg)
-    slot_region = (
-        jnp.abs(Z - cfg.center[2]) <= cfg.rotor_half_length
-    ).astype(conductor.dtype)
     sources = []
     tiny = 1e-12
     for phase in range(3):
@@ -165,7 +163,7 @@ def three_phase_impressed_source3d(
         negative_scale = pos_sum / jnp.maximum(neg_sum, tiny)
         basis = jnp.where(usable, positive - negative_scale * negative, 0.0)
         sources.append(cfg.current_density_peak * phase_currents[phase] * basis)
-    phase_jz = jnp.stack(sources, axis=0) * slot_region
+    phase_jz = jnp.stack(sources, axis=0)
     return jnp.sum(phase_jz, axis=0), phase_jz
 
 

@@ -87,7 +87,10 @@ def air_gap_iron_bridge(mf: MaterialField, cfg: MotorConfig3D, threshold: float 
     X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
     r = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
     rotor_axial = np.abs(Z - cz) <= cfg.rotor_half_length
-    r_rotor_solid = min(cfg.R_rotor_outer + 0.0044, cfg.R_stator_inner - 0.0005)
+    r_rotor_solid = min(
+        getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer + 0.0044) + 0.0001,
+        cfg.R_stator_inner - 0.0005,
+    )
     gap_band = (r >= r_rotor_solid) & (r < cfg.R_stator_inner) & rotor_axial
     if gap_band.sum() == 0:
         return {"air_gap_iron_bridge": False, "air_gap_iron_fraction": 0.0}

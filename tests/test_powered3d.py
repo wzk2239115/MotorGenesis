@@ -50,11 +50,8 @@ def test_powered_workflow_preserves_native_xyz_fields():
     cfg = MotorConfig3D(shape=(5, 5, 5), filt_radius=0.0, projection_beta=0.0)
     logits, rotor_logits, magnetization, _ = load_design3d(cfg, None)
 
-    def fake_forward(
-        _cfg, _logits, _rotor_logits, _magnetization, angles, _temperature
-    ):
-        shape = _cfg.shape
-        angle = float(angles[0])
+    def fake_forward(_belts, angle):
+        shape = cfg.shape
         scalar = jnp.ones(shape)
         vector = jnp.zeros(shape + (3,))
         vector = vector.at[..., 0].set(0.4 + 0.1 * np.cos(angle))
@@ -103,13 +100,13 @@ def test_powered_workflow_preserves_native_xyz_fields():
         magnetization,
         [0.0, 0.5 * np.pi],
         settings,
-        forward_solver=fake_forward,
+        phase_solver=fake_forward,
     )
 
     assert summary["model"].startswith("quasi-static field-map transient")
     assert summary["full_time_domain_eddy_current"] is False
     assert data["flux_density_map_T"].shape == (2,) + cfg.shape + (3,)
-    assert data["current_density_map_A_m2"].shape == (2,) + cfg.shape + (3,)
+    assert data["torque_map_per_phase_Nm"].shape == (3, 2)
     assert data["temperature_map_C"].shape == (2,) + cfg.shape
     assert data["displacement_m"].shape == cfg.shape + (3,)
     assert data["von_mises_Pa"].shape == cfg.shape

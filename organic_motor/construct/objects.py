@@ -110,7 +110,7 @@ class SurfaceMagnets:
     """
 
     cfg: MotorConfig3D
-    thickness: float = 0.0035
+    thickness: float = 0.0015
     pole_fraction: float = 0.72
     skew_angle: float = 0.5236  # one slot pitch (30 deg) over the stack
 
@@ -191,9 +191,9 @@ class FieldDrivenMagnets:
     """
 
     cfg: MotorConfig3D
-    base_thickness: float = 0.0035
-    min_thickness: float = 0.0025
-    max_thickness: float = 0.0032
+    base_thickness: float = 0.0015
+    min_thickness: float = 0.0012
+    max_thickness: float = 0.0018
     pole_fraction: float = 0.72
     skew_angle: float = 0.5236  # helical pole twist over the stack (rad)
     thickness_field: object | None = None  # ScalarField; default = airgap_B
@@ -218,7 +218,10 @@ class FieldDrivenMagnets:
         X, Y, Z, r, theta = _angles_of(cfg)
         z_norm = np.clip((Z - cz + hz) / (2.0 * hz), 0.0, 1.0)
         axial_factor = 0.4 + 0.6 * np.sin(np.pi * z_norm)
-        z_skew = (Z - cz) / max(cfg.rotor_half_length, 1e-9)
+        # SAME skew normalisation as SurfaceMagnets.magnetization: the pole
+        # pattern twists by exactly ``skew_angle`` over the FULL stack
+        # (z_norm in [-1, 1] -> offset in [-skew/2, +skew/2]).
+        z_skew = (Z - cz) / max(2.0 * cfg.rotor_half_length, 1e-9)
 
         sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
         for p in range(poles):
@@ -412,7 +415,7 @@ class Winding3D:
         netlist = CoilNetlist(
             n_slots=self.n_slots, pole_pairs=cfg.pole_pairs,
             n_phases=3, coil_span=self.coil_span,
-            n_layers=self.n_layers, turns_per_coil=self.strands_per_slot,
+            n_layers=self.n_layers, turns_per_coil=1,
             connection="star",
         )
         phase_of_slot = netlist.slot_phase_assignment()
@@ -615,14 +618,17 @@ class RotorSleeve:
     """
 
     cfg: MotorConfig3D
-    thickness: float = 0.001
-    clearance: float = 0.0002
+    thickness: float = 0.0004
+    clearance: float = 0.0003
 
     def build(self, mf: MaterialField) -> MaterialField:
         cfg = self.cfg
         hz = cfg.rotor_half_length - 0.0001
-        r_inner = cfg.R_rotor_outer + 0.0032 + self.clearance
-        r_outer = min(r_inner + self.thickness, cfg.R_stator_inner - 0.0005)
+        # Sleeve spans from the magnet outer surface to R_sleeve_outer, so
+        # the open air gap (R_sleeve_outer..R_stator_inner = 2.6mm) stays
+        # resolvable at the physics grid.
+        r_inner = cfg.R_rotor_outer + 0.0002 + 0.0018 + self.clearance
+        r_outer = cfg.R_sleeve_outer
         if r_outer <= r_inner:
             return mf
         sleeve = _annulus(cfg, r_inner, r_outer, hz)
@@ -871,7 +877,7 @@ class FunctionalVoids:
 
         r_eff = self.rotor_solid_outer
         if r_eff <= 0.0:
-            r_eff = min(cfg.R_rotor_outer + 0.0044, cfg.R_stator_inner - 0.0005)
+            r_eff = min(cfg.R_sleeve_outer + 0.0001, cfg.R_stator_inner - 0.0005)
 
         radial_gap = np.maximum(r - cfg.R_stator_inner, (r_eff + 0.0001) - r)
         axial_limit = np.abs(Z - cz) - hz

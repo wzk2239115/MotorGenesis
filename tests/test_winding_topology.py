@@ -61,7 +61,10 @@ class TestWindingTopology:
     def test_each_phase_has_copper(self, built):
         cfg, mf = built
         belts = mf.metadata["winding_netlist"].phase_belts_3d(cfg)
-        copper = mf.sdfs["copper"].sdf < 0.0
+        # Density threshold (not hard SDF<0): on coarse grids a thin wire
+        # can pass between nodes, but its smoothed density is still present
+        # in the phase's own slot sectors.
+        copper = mf.to_densities()["copper"] > 0.1
         for ph in range(3):
             n_vox = int((copper & (belts[ph] != 0)).sum())
             assert n_vox > 0, f"phase {ph} has no copper"

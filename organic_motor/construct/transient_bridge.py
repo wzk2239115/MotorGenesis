@@ -93,7 +93,11 @@ def extract_electrical_parameters(
         netlist = CoilNetlist(n_slots=12, pole_pairs=cfg.pole_pairs)
 
     copper_vol = float(np.sum(copper)) * cfg.cell_volume
-    n_turns = netlist.turns_per_coil * netlist.n_layers
+    # Effective series turns: one coil per slot, series-connected across the
+    # phase's slots.  Parallel strands (touching bundle wires) add copper
+    # CROSS-SECTION, not ampere-turns, and other phases' radial layers are
+    # separate circuits -- neither may be counted into this phase's turns.
+    n_turns = netlist.turns_per_coil
     slots_per_phase = netlist.n_slots // netlist.n_phases
     n_turns_total = n_turns * slots_per_phase
 

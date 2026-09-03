@@ -251,35 +251,64 @@ def compute_powered_maps(
     angles: Sequence[float],
     settings: Powered3DSettings,
     *,
-    forward_solver: Callable[..., ForwardResult3D] | None = None,
+    phase_solver=None,
+    base_belts=None,
     include_mechanics: bool = True,
 ) -> dict:
-    """Solve the angle-sampled field maps, structural loading and materials.
+    """Solve PER-PHASE torque maps: T_p(theta) for each phase at unit drive.
 
-    This is the expensive part (one Maxwell/conduction/thermal solve per
-    map angle) and is IDENTICAL for every startup initial angle, so it is
-    computed once and shared by all transient runs.  ``include_mechanics``
-    can be disabled when the caller only needs the transient (the linear
-    elasticity solve costs minutes and feeds only the summary).
+    The transient then computes the electromagnetic torque from the
+    instantaneous phase currents, ``T_em = sum_p (I_p / I_nom_p) T_p(theta)``,
+    so the commutation angle genuinely enters the electromagnetics --
+    a single balanced-excitation map scaled by a current projection cannot
+    represent commutation at all.
+
+    Each phase is solved ALONE (other belts zeroed) at every map angle:
+    3 x na solves, shared by every startup initial angle.  ``phase_solver``
+    overrides the default ``forward3d`` (e.g. to run on realized
+    constructed fields); ``base_belts`` supplies the winding's own phase
+    belts (e.g. from a CoilNetlist) instead of the analytic cosine belts.
     """
-    solver = forward3d if forward_solver is None else forward_solver
-    map_results = []
-    for _i, angle in enumerate(angles):
-        map_results.append(
-            solver(
-                cfg, logits, rotor_logits, magnetization_raw, [float(angle)],
-                cfg.sm_temp_final,
+    from organic_motor.optimization.objective3d import _phase_belts, forward3d
+
+    if phase_solver is None:
+        def phase_solver(belts, angle):
+            return forward3d(
+                cfg, logits, rotor_logits, magnetization_raw, [angle],
+                cfg.sm_temp_final, phase_belts_override=belts,
             )
-        )
-        print(f"    [maps] angle {_i + 1}/{len(angles)} solved", flush=True)
+
+    full = jnp.asarray(base_belts if base_belts is not None else _phase_belts(cfg))
+    zero = jnp.zeros_like(full[0])
+    singles = [
+        jnp.stack([full[p] if q == p else zero for q in range(3)])
+        for p in range(3)
+    ]
+
+    na = len(angles)
+    torques_ph = np.zeros((3, na), dtype=np.float64)
+    j_maps_ph = np.zeros((3, na) + cfg.shape + (3,), dtype=np.float32)
+    b_map = np.zeros((na,) + cfg.shape + (3,), dtype=np.float32)
+    temperature_map = np.zeros((na,) + cfg.shape, dtype=np.float32)
+    nominal = np.zeros(3, dtype=np.float64)
+    last_result = None
+    for p in range(3):
+        for i, angle in enumerate(angles):
+            result = phase_solver(singles[p], float(angle))
+            torques_ph[p, i] = float(result.torques[0])
+            j_maps_ph[p, i] = np.asarray(result.phase_current_density)[p]
+            if p == 0:
+                b_map[i] = np.asarray(result.flux_density)
+                temperature_map[i] = np.asarray(result.temperature)
+            last_result = result
+            print(f"    [maps] phase {p} angle {i + 1}/{na} "
+                  f"T={torques_ph[p, i]:+.4f}", flush=True)
+        nominal[p] = _nominal_phase_current(last_result, cfg)
+    nominal = np.maximum(nominal, 1e-6)
+
     period = 2.0 * np.pi / cfg.pole_pairs
     map_angles = np.mod(np.asarray(angles, dtype=float), period)
-    torques = np.asarray([float(result.torques[0]) for result in map_results])
-    b_map = jnp.asarray(np.stack([np.asarray(result.flux_density) for result in map_results]))
-    j_map = jnp.asarray(np.stack([np.asarray(result.current_density) for result in map_results]))
-    temperature_map = np.stack([np.asarray(result.temperature) for result in map_results])
-    base = map_results[0]
-    materials = material_fields3d(base, cfg)
+    materials = material_fields3d(last_result, cfg)
     masks = domain_masks3d(cfg)
     mechanics = None
     if include_mechanics:
@@ -302,15 +331,15 @@ def compute_powered_maps(
     return {
         "map_angles": map_angles,
         "period": period,
-        "torques": torques,
-        "b_map": b_map,
-        "j_map": j_map,
+        "torques_ph": torques_ph,
+        "j_maps_ph": jnp.asarray(j_maps_ph),
+        "b_map": jnp.asarray(b_map),
         "temperature_map": temperature_map,
         "temperature_init": jnp.asarray(temperature_map.mean(axis=0)),
         "materials": materials,
         "masks": masks,
         "mechanics": mechanics,
-        "nominal_current": _nominal_phase_current(base, cfg),
+        "nominal_current": jnp.asarray(nominal),
         "_settings_for_scan": settings,
     }
 
@@ -337,19 +366,19 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     """
     p = cfg.pole_pairs
     period = maps["period"]
-    torques = jnp.asarray(maps["torques"])
-    b_map = maps["b_map"]
-    j_map = maps["j_map"]
-    temperature_init = maps["temperature_init"]
+    torques_ph = jnp.asarray(maps["torques_ph"], dtype=jnp.float32)   # (3, na)
+    j_maps_ph = jnp.asarray(maps["j_maps_ph"], dtype=jnp.float32)     # (3, na, X,Y,Z,3)
+    b_map = jnp.asarray(maps["b_map"], dtype=jnp.float32)             # (na, X,Y,Z,3)
+    temperature_init = jnp.asarray(maps["temperature_init"], dtype=jnp.float32)
     materials = maps["materials"]
     masks = maps["masks"]
-    nominal_current = maps["nominal_current"]
-    phase_shifts = jnp.asarray((0.0, -2.0 * jnp.pi / 3.0, 2.0 * jnp.pi / 3.0))
-    copper_fraction = jnp.asarray(materials["fractions"][2])
-    iron_fraction = jnp.asarray(materials["fractions"][1])
-    sigma = cfg.sigma_copper * jnp.maximum(copper_fraction, 1.0e-6)
-    k_thermal = jnp.asarray(materials["thermal_conductivity"])
-    c_vol = jnp.asarray(materials["volumetric_heat_capacity"])
+    nominal_current = jnp.asarray(maps["nominal_current"], dtype=jnp.float32)  # (3,)
+    phase_shifts = jnp.asarray((0.0, -2.0 * jnp.pi / 3.0, 2.0 * np.pi / 3.0), dtype=jnp.float32)
+    copper_fraction = jnp.asarray(materials["fractions"][2], dtype=jnp.float32)
+    iron_fraction = jnp.asarray(materials["fractions"][1], dtype=jnp.float32)
+    sigma = jnp.asarray(cfg.sigma_copper * jnp.maximum(copper_fraction, 1.0e-6), dtype=jnp.float32)
+    k_thermal = jnp.asarray(materials["thermal_conductivity"], dtype=jnp.float32)
+    c_vol = jnp.asarray(materials["volumetric_heat_capacity"], dtype=jnp.float32)
     cooling_mask = jnp.asarray(masks["boundary"], dtype=jnp.float32)
     dt = settings.dt
     steps = int(settings.steps)
@@ -381,16 +410,24 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
         if i_lim is not None:
             clamped = jnp.clip(currents, -i_lim, i_lim)
             currents = clamped - jnp.mean(clamped)
-        wave = jnp.cos(elec + phase_shifts)
-        scale = jnp.sum(currents * wave) / (1.5 * nominal_current)
-        base_torque = _interp_uniform(torques, angle, period)
-        em_torque = base_torque * scale
+        # Per-phase current excitation: the commutation angle enters the
+        # electromagnetics through the ACTUAL phase currents against the
+        # per-phase torque maps, not through a projection wave that is
+        # collinear with the voltage (and therefore offset-invariant at
+        # standstill).
+        i_norm = currents / nominal_current
+        torque_vec = jnp.stack([
+            _interp_uniform(torques_ph[q], angle, period) for q in range(3)
+        ])
+        em_torque = jnp.sum(torque_vec * i_norm)
         load = load_torque(omega, constant=load_const, viscous=load_visc)
         rotor = advance_rotor(
             RotorState(angle, omega), em_torque, load, J, dt
         )
         angle, omega = rotor.angle, rotor.angular_velocity
-        mapped_j = _interp_uniform(j_map, angle, period) * scale
+        mapped_j = jnp.sum(jnp.stack([
+            _interp_uniform(j_maps_ph[q], angle, period) for q in range(3)
+        ]) * i_norm[:, None, None, None, None], axis=0)
         mapped_b = _interp_uniform(b_map, angle, period)
         q_joule = transient_joule_loss(mapped_j, sigma, active_mask=copper_fraction)
         db_dt = (mapped_b - prev_b) / dt
@@ -398,10 +435,13 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
         q_iron = transient_iron_loss(
             mapped_b, db_dt, k_hyst, k_eddy, frequency, iron_mask=iron_fraction
         )
-        temperature = advance_voxel_temperature(
-            temperature, q_joule + q_iron, k_thermal, c_vol, spacing, dt,
-            ambient_temperature=ambient, cooling_coefficient=cool,
-            cooling_mask=cooling_mask,
+        temperature = jnp.asarray(
+            advance_voxel_temperature(
+                temperature, q_joule + q_iron, k_thermal, c_vol, spacing, dt,
+                ambient_temperature=ambient, cooling_coefficient=cool,
+                cooling_mask=cooling_mask,
+            ),
+            dtype=jnp.float32,
         )
         outs = (
             angle, omega, currents, em_torque,
@@ -463,47 +503,65 @@ def run_powered3d(
     angles: Sequence[float],
     settings: Powered3DSettings,
     *,
-    forward_solver: Callable[..., ForwardResult3D] | None = None,
+    phase_solver=None,
+    base_belts=None,
     initial_angle: float = 0.0,
+    include_mechanics: bool = True,
 ) -> tuple[dict[str, np.ndarray], dict]:
     """Run field maps, structural loading, and map-driven transient dynamics."""
     maps = compute_powered_maps(
         cfg, logits, rotor_logits, magnetization_raw, angles, settings,
-        forward_solver=forward_solver,
+        phase_solver=phase_solver, base_belts=base_belts,
+        include_mechanics=include_mechanics,
     )
     transient = run_powered_transient(maps, settings, cfg, initial_angle)
     mechanics = maps["mechanics"]
     materials = maps["materials"]
-    displacement = np.asarray(mechanics.displacement)
+    displacement = (
+        np.asarray(mechanics.displacement) if mechanics is not None
+        else np.zeros(cfg.shape + (3,))
+    )
     collision = _collision_diagnostics(displacement, cfg)
     speed = transient["angular_velocity_rad_s"]
     max_temperature = transient["max_temperature_C"]
+    # Balanced-excitation torque map synthesised from the per-phase maps
+    # (for reporting; the transient itself uses the per-phase maps).
+    elec_map = cfg.pole_pairs * maps["map_angles"] + cfg.electrical_phase_offset
+    shifts = np.asarray((0.0, 2.0 * np.pi / 3.0, 4.0 * np.pi / 3.0))
+    torque_map = np.sum(
+        np.cos(elec_map[None, :] - shifts[:, None]) * maps["torques_ph"], axis=0
+    )
     data = {
         "map_angles_rad": maps["map_angles"],
-        "torque_map_Nm": maps["torques"],
+        "torque_map_Nm": torque_map,
+        "torque_map_per_phase_Nm": maps["torques_ph"],
         "flux_density_map_T": np.asarray(maps["b_map"]),
-        "current_density_map_A_m2": np.asarray(maps["j_map"]),
         "temperature_map_C": maps["temperature_map"],
         "young_modulus_Pa": materials["young_modulus"],
         "poisson_ratio": materials["poisson_ratio"],
         "thermal_expansion_1_K": materials["thermal_expansion"],
         "mass_density_kg_m3": materials["mass_density"],
         "displacement_m": displacement,
-        "von_mises_Pa": np.asarray(mechanics.von_mises),
+        "von_mises_Pa": (
+            np.asarray(mechanics.von_mises) if mechanics is not None
+            else np.zeros(cfg.shape)
+        ),
         "initial_angle_rad": initial_angle,
         **transient,
     }
     summary = {
-        "model": "quasi-static field-map transient (jit scan)",
+        "model": "quasi-static field-map transient (jit scan, per-phase maps)",
         "full_time_domain_eddy_current": False,
         "shape": list(cfg.shape),
         "angle_samples": len(maps["map_angles"]),
         "steps": settings.steps,
-        "torque_mean_Nm": float(np.mean(maps["torques"])),
-        "torque_ripple_peak_to_peak_Nm": float(np.ptp(maps["torques"])),
+        "torque_mean_Nm": float(np.mean(torque_map)),
+        "torque_ripple_peak_to_peak_Nm": float(np.ptp(torque_map)),
         "maximum_displacement_m": float(np.linalg.norm(displacement, axis=-1).max()),
-        "maximum_von_mises_Pa": float(np.asarray(mechanics.von_mises).max()),
-        "mechanical_relative_residual": float(mechanics.relative_residual),
+        "maximum_von_mises_Pa": float(np.asarray(data["von_mises_Pa"]).max()),
+        "mechanical_relative_residual": (
+            float(mechanics.relative_residual) if mechanics is not None else 0.0
+        ),
         "final_speed_rad_s": float(speed[-1]),
         "final_max_temperature_C": float(max_temperature[-1]),
         **collision,

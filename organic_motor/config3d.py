@@ -19,12 +19,12 @@ class MotorConfig3D(MotorConfig):
     shape: tuple[int, int, int] = (56, 56, 36)
     box_size: tuple[float, float, float] = (0.140, 0.140, 0.100)
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    # Maxwell stress surface radius: must lie in the true AIR gap.  The
-    # constructed rotor has surface magnets to r=28.4mm and a sleeve to
-    # 29.4mm, so the stator-side gap (29.4..30mm) is the only valid
-    # integration surface -- the 2-D default (26mm) sits inside the
-    # magnetized material, where the simple B-stress integral is invalid.
-    R_torque: float = 0.0297
+    # Maxwell stress surface radius: must lie in the true AIR gap with at
+    # least ~half a cell of clearance to any solid.  The constructed rotor
+    # (magnets to 27.0mm, sleeve to 27.4mm) leaves a 2.6mm open gap to the
+    # 30.0mm stator -- resolvable at the 56^3 physics grid (2.55mm cells).
+    R_sleeve_outer: float = 0.0274
+    R_torque: float = 0.0287
     # A wider coarse-grid gap than the converged 2-D benchmark keeps the
     # mechanical separation representable at the default 48^2 cross-section.
     R_stator_inner: float = 0.030
