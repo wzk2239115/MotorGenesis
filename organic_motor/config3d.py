@@ -19,15 +19,20 @@ class MotorConfig3D(MotorConfig):
     shape: tuple[int, int, int] = (56, 56, 36)
     box_size: tuple[float, float, float] = (0.140, 0.140, 0.100)
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    # Maxwell stress surface radius: must lie in the true AIR gap with at
-    # least ~half a cell of clearance to any solid.  The constructed rotor
-    # (magnets to 27.0mm, sleeve to 27.4mm) leaves a 2.6mm open gap to the
-    # 30.0mm stator -- resolvable at the 56^3 physics grid (2.55mm cells).
-    R_sleeve_outer: float = 0.0274
-    R_torque: float = 0.0287
-    # A wider coarse-grid gap than the converged 2-D benchmark keeps the
-    # mechanical separation representable at the default 48^2 cross-section.
-    R_stator_inner: float = 0.030
+    # Resolution budget (P2 redesign): the magnet must span >= ~3 cells
+    # and the open gap ~2 cells at the PHYSICS grid for torque to be
+    # trustworthy.  With 96x96x58 cells (1.47 x 1.47 x 1.75 mm):
+    #   rotor iron  8.2 .. 21.6 mm
+    #   magnets    21.8 .. 25.8 mm   (3.0-4.0 mm thick = 2.0-2.7 cells)
+    #   sleeve     25.9 .. 27.5 mm   (1.6 mm = 1.1 cells)
+    #   open gap   27.5 .. 30.5 mm   (3.0 mm = 2.0 cells)
+    #   magnet+gap = 7.0 mm = 4.8 cells (>= 3 qualitative gate met)
+    # R_torque sits mid-gap with 1.5 mm (1.0 cell) clearance to solids.
+    R_rotor_outer: float = 0.0216
+    R_sleeve_outer: float = 0.0275
+    R_torque: float = 0.0290
+    R_stator_inner: float = 0.0305
+    R_winding_inner: float = 0.0305
     stack_length: float = 0.060
     axial_airgap: float = 0.001
     excitation_mode: str = "terminal"

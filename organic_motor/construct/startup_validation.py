@@ -355,6 +355,7 @@ def validate_startup(
     fft = abs(np.fft.rfft(t0)) * 2.0 / max(na, 1)
     result.torque_decomposition = {
         "t0_peak_Nm": float(np.max(np.abs(t0))),
+        "t0_rms_Nm": float(np.sqrt(np.mean(t0 ** 2))),
         "t0_dominant_harmonic_per_period": int(np.argmax(fft[1:]) + 1),
         "t1_amplitudes_Nm": [float(np.max(np.abs(t1[p]))) for p in range(3)],
         "t2_diag_amplitudes_Nm": [float(np.max(np.abs(t2[p]))) for p in range(3)],

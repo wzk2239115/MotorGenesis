@@ -54,10 +54,15 @@ def parser() -> argparse.ArgumentParser:
                          "0/180 deg select the sign for this convention")
     ap.add_argument("--maxwell-iters", type=int, default=300,
                     help="Maxwell CG iterations (torque converges ~300)")
-    ap.add_argument("--torque-radius", type=float, default=0.0287,
+    ap.add_argument("--torque-radius", type=float, default=0.029,
                     help="Maxwell stress surface radius [m] (must be in the air gap)")
     ap.add_argument("--shape", type=_parse_shape, default=None,
-                    help="physics grid Nx,Ny,Nz (default 56,56,36)")
+                    help="physics grid Nx,Ny,Nz (default 96,96,58 where the "
+                         "magnet+gap spans ~4.8 cells and the T1 ladder-step "
+                         "96->112 agrees to +2.7%%; finer grids 128/160 "
+                         "currently DIVERGE (helical-skew/grid moire + stress-"
+                         "surface localisation -- see P3 notes); use 56,56,36 "
+                         "for quick iterations)")
     ap.add_argument("--convergence", action="store_true",
                     help="measure quantitative torque convergence against a "
                          "96x96x58 refinement (adds ~45 min)")
@@ -72,12 +77,11 @@ def _parse_shape(text: str) -> tuple[int, int, int]:
     return values  # type: ignore[return-value]
 
 
-def _torque_convergence_check(cfg, mf, mag, settings, map_angles, fine_shape):
-    """T0 + phase-A T1 amplitude change between the physics grid and a refinement.
+def _fine_grid_amplitudes(cfg, settings, map_angles, fine_shape):
+    """T0 rms + phase-A T1 amplitude at a REFINED grid (convergence ladder).
 
-    Returns the percent changes; the full 3-phase map set at the finer grid
-    is not needed to establish (non-)convergence of the dominant torque
-    terms.
+    The coarse side of the ladder is reused from the main run's maps, so
+    only the fine-grid solves are extra.
     """
     from dataclasses import replace
 
@@ -87,55 +91,64 @@ def _torque_convergence_check(cfg, mf, mag, settings, map_angles, fine_shape):
     from organic_motor.optimization.objective3d import forward3d_fields
     from organic_motor.experiments.motor3d_powered import compute_powered_maps
 
-    def amplitudes(shape):
-        g = replace(cfg, shape=shape)
-        motor = field_driven_motor(g)
-        m = motor.build()
-        # Magnetization at THIS grid's resolution (a physics-grid array
-        # would not match a refined build).
-        mag_g = motor.magnetization()
-        fields, _mag = realize(m, g)
-        netlist = m.metadata.get("winding_netlist")
-        belts = None
-        if netlist is not None:
-            belts = jnp.asarray(netlist.phase_belts_3d(g))
+    g = replace(cfg, shape=fine_shape)
+    motor = field_driven_motor(g)
+    m = motor.build()
+    # Magnetization at the refined grid (a coarse-grid array would not
+    # match the refined build).
+    mag_g = motor.magnetization()
+    fields, _mag = realize(m, g)
+    netlist = m.metadata.get("winding_netlist")
+    belts = None
+    if netlist is not None:
+        belts = jnp.asarray(netlist.phase_belts_3d(g))
 
-        def phase_solver(single, angle, amplitudes_arg):
-            return forward3d_fields(
-                g, fields, mag_g, [angle], single, phase_amplitudes=amplitudes_arg,
-            )
-
-        maps = compute_powered_maps(
-            g, None, None, mag_g, map_angles, settings,
-            phase_solver=phase_solver, base_belts=belts,
-            include_mechanics=False, keep_volumes=False,
-            phases=(0,),  # phase-A T1 + T0 suffice for the convergence gate
+    def phase_solver(single, angle, amplitudes_arg):
+        return forward3d_fields(
+            g, fields, mag_g, [angle], single, phase_amplitudes=amplitudes_arg,
         )
-        t0 = np.asarray(maps["torque_cogging"], dtype=float)
-        t1 = np.asarray(maps["torques_ph"], dtype=float)
-        return {
-            "t0_rms": float(np.sqrt(np.mean(t0 ** 2))),
-            "t1_phase0_amp": float(np.max(np.abs(t1[0]))),
-        }
 
-    coarse = amplitudes(cfg.shape)
-    fine = amplitudes(fine_shape)
+    maps = compute_powered_maps(
+        g, None, None, mag_g, map_angles, settings,
+        phase_solver=phase_solver, base_belts=belts,
+        include_mechanics=False, keep_volumes=False,
+        phases=(0,),  # phase-A T1 + T0 suffice for the convergence gate
+    )
+    t0 = np.asarray(maps["torque_cogging"], dtype=float)
+    t1 = np.asarray(maps["torques_ph"], dtype=float)
     return {
-        "physics_shape": list(cfg.shape),
-        "fine_shape": list(fine_shape),
-        "t0_rms_physics_Nm": coarse["t0_rms"],
-        "t0_rms_fine_Nm": fine["t0_rms"],
-        "t0_rms_change_pct": 100.0 * (fine["t0_rms"] - coarse["t0_rms"]) / max(coarse["t0_rms"], 1e-9),
-        "t1_amplitude_physics_Nm": coarse["t1_phase0_amp"],
-        "t1_amplitude_fine_Nm": fine["t1_phase0_amp"],
-        "t1_amplitude_change_pct": 100.0 * (fine["t1_phase0_amp"] - coarse["t1_phase0_amp"])
-        / max(coarse["t1_phase0_amp"], 1e-9),
+        "t0_rms": float(np.sqrt(np.mean(t0 ** 2))),
+        "t1_phase0_amp": float(np.max(np.abs(t1[0]))),
     }
+
+
+def _patch_torque_convergence(result, conv):
+    """Fold the quantitative torque ladder into the mesh-convergence verdict."""
+    verdict = result.verdicts["verdicts"]["mesh_convergence"]
+    detail = verdict["detail"]
+    detail["torque"] = conv
+    t1_change = abs(float(conv["t1_amplitude_change_pct"]))
+    t0_change = abs(float(conv["t0_rms_change_pct"]))
+    detail["torque_stable"] = bool(max(t1_change, t0_change) <= 5.0)
+    topology_stable = bool(detail.get("topology_stable", False))
+    verdict["passed"] = bool(topology_stable and detail["torque_stable"])
+    suite = result.verdicts
+    suite["failed"] = [k for k in suite["verdicts"]
+                       if suite["verdicts"][k]["passed"] is False]
+    suite["evaluated"] = sum(1 for k in suite["verdicts"]
+                             if suite["verdicts"][k]["passed"] is not None)
+    suite["passed"] = bool(
+        not suite["failed"]
+        and suite["verdicts"]["electromechanical"]["passed"] is True
+        and suite["verdicts"]["winding"]["passed"] is True
+        and suite["verdicts"]["structure"]["passed"] is True
+    )
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parser().parse_args(argv)
-    shape = _parse_shape(args.shape) if args.shape else (56, 56, 36)
+    shape = _parse_shape(args.shape) if args.shape else (96, 96, 58)
     cfg = MotorConfig3D(
         shape=shape,
         excitation_mode="impressed",
@@ -175,20 +188,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"[startup] display build {display_cfg.shape} for topology verdicts...")
     display_mf = field_driven_motor(display_cfg).build()
 
-    torque_convergence = None
-    if args.convergence:
-        from organic_motor.experiments.motor3d_powered import Powered3DSettings
-
-        conv_settings = Powered3DSettings()
-        period = 2.0 * np.pi / cfg.pole_pairs
-        map_angles = np.arange(args.map_angles) * period / args.map_angles
-        print("[startup] torque-convergence refinement (96x96x58, ~45 min)...")
-        torque_convergence = _torque_convergence_check(
-            cfg, mf, mag, conv_settings, map_angles, (96, 96, 58),
-        )
-        print(f"  T1 amplitude change: {torque_convergence['t1_amplitude_change_pct']:+.1f}%")
-        print(f"  T0 rms change      : {torque_convergence['t0_rms_change_pct']:+.1f}%")
-
     print(f"[startup] running {args.angles} initial angles, "
           f"{args.steps} steps x {args.dt*1e3:.1f} ms "
           f"(= {args.steps*args.dt*1e3:.0f} ms), I_limit = {args.current_limit} A")
@@ -209,8 +208,38 @@ def main(argv: Sequence[str] | None = None) -> None:
         electric_maxiter=80,
         display_mf=display_mf,
         display_cfg=display_cfg,
-        torque_convergence=torque_convergence,
     )
+
+    if args.convergence and result.verdicts is not None:
+        from organic_motor.experiments.motor3d_powered import Powered3DSettings
+
+        conv_settings = Powered3DSettings()
+        period = 2.0 * np.pi / cfg.pole_pairs
+        map_angles = np.arange(args.map_angles) * period / args.map_angles
+        # Adjacent ladder step: 96->112 agreed on T1 (+2.7%%) but T0 rms
+        # +768%%; 128/160 steps diverge on both (skew/grid moire) and are
+        # recorded in the run report as known-unresolved.
+        fine_shape = (112, 112, 66)
+        print(f"[startup] torque-convergence refinement {fine_shape} "
+              f"(phase-A + zero-I solves)...")
+        fine = _fine_grid_amplitudes(cfg, conv_settings, map_angles, fine_shape)
+        td = result.torque_decomposition
+        conv = {
+            "physics_shape": list(cfg.shape),
+            "fine_shape": list(fine_shape),
+            "t0_rms_physics_Nm": td["t0_rms_Nm"],
+            "t0_rms_fine_Nm": fine["t0_rms"],
+            "t0_rms_change_pct": 100.0 * (fine["t0_rms"] - td["t0_rms_Nm"])
+            / max(td["t0_rms_Nm"], 1e-9),
+            "t1_amplitude_physics_Nm": td["t1_amplitudes_Nm"][0],
+            "t1_amplitude_fine_Nm": fine["t1_phase0_amp"],
+            "t1_amplitude_change_pct": 100.0
+            * (fine["t1_phase0_amp"] - td["t1_amplitudes_Nm"][0])
+            / max(td["t1_amplitudes_Nm"][0], 1e-9),
+        }
+        print(f"  T1 amplitude change: {conv['t1_amplitude_change_pct']:+.1f}%")
+        print(f"  T0 rms change      : {conv['t0_rms_change_pct']:+.1f}%")
+        _patch_torque_convergence(result, conv)
 
     args.out.mkdir(parents=True, exist_ok=True)
     summary = result.summary()

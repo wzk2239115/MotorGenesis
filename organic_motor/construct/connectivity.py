@@ -49,10 +49,17 @@ def _grids(cfg: MotorConfig3D):
 
 
 def anchor_masks(cfg: MotorConfig3D):
-    """Structural anchors: the shaft (rotor side) and the housing ring."""
+    """Structural anchors: the shaft (rotor side) and the housing RING band.
+
+    The housing anchor is the actual blade/ring annulus (R_design+5 ..
+    +7.8 mm -- MotorHousing's 55..58 mm shell minus the outer aliasing
+    fringe), NOT "everything beyond R_design": an over-wide anchor lets
+    any detached fleck near the housing count as a load path, which is
+    exactly the false-anchor failure the audit exists to catch.
+    """
     _X, _Y, Z, r = _grids(cfg)
     shaft = r < (cfg.R_shaft + 0.001)
-    housing = r > (cfg.R_design + 0.003)
+    housing = (r >= cfg.R_design + 0.005) & (r <= cfg.R_design + 0.0078)
     return shaft, housing
 
 
