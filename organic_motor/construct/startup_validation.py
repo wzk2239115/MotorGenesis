@@ -120,8 +120,11 @@ def run_single_startup(
         if fields is not None:
             realized = fields
 
-            def phase_solver(single, angle):
-                return forward3d_fields(cfg, realized, magnetization, [angle], single)
+            def phase_solver(single, angle, amplitudes):
+                return forward3d_fields(
+                    cfg, realized, magnetization, [angle], single,
+                    phase_amplitudes=amplitudes,
+                )
 
             maps_kwargs["phase_solver"] = phase_solver
             if phase_belts_override is not None:
@@ -189,11 +192,13 @@ def validate_startup(
     dt: float = 2.0e-5,
     voltage: float = 24.0,
     current_limit: float = 50.0,
+    commutation_offset: float = 3.1415927,
     load_torque: float = 0.005,
     load_viscous: float = 1.0e-4,
     rotor_inertia: float = 2.0e-4,
     min_speed_rad_s: float = 1.0,
-    max_current_A: float = 200.0,
+    max_current_A: float = 0.0,  # 0 = auto: 1.3x clamp (zero-sequence
+    # re-centring of clamped currents can overshoot the per-phase limit)
     maxwell_maxiter: int | None = None,
     thermal_maxiter: int | None = None,
     electric_maxiter: int | None = None,
@@ -232,6 +237,8 @@ def validate_startup(
     period = 2.0 * np.pi / cfg.pole_pairs
     initial_angles = np.linspace(0, period, n_angles, endpoint=False)
     map_angles = np.arange(n_map_angles) * period / n_map_angles
+    if max_current_A <= 0.0:
+        max_current_A = 1.3 * current_limit
 
     settings = Powered3DSettings(
         steps=steps,
@@ -241,6 +248,7 @@ def validate_startup(
         phase_inductance=phase_inductance,
         flux_linkage=flux_linkage,
         current_limit=current_limit,
+        commutation_offset=commutation_offset,
         load_torque=load_torque,
         load_viscous=load_viscous,
         rotor_inertia=rotor_inertia,
@@ -274,8 +282,10 @@ def validate_startup(
 
     from organic_motor.experiments.motor3d_powered import compute_powered_maps
 
-    def phase_solver(single, angle):
-        return forward3d_fields(cfg, fields, magnetization, [angle], single)
+    def phase_solver(single, angle, amplitudes):
+        return forward3d_fields(
+            cfg, fields, magnetization, [angle], single, phase_amplitudes=amplitudes
+        )
 
     maps = compute_powered_maps(
         cfg, logits, rotor_logits, magnetization,

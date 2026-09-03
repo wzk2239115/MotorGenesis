@@ -56,7 +56,12 @@ class Powered3DSettings:
     phase_inductance: float = 2.0e-3
     flux_linkage: float = 0.03
     current_limit: float | None = None  # A per phase; None = unlimited
-    commutation_offset: float = 1.5707963  # q-axis (FOC) drive by default
+    commutation_offset: float = 0.0
+    # ^ phase-current angle relative to the rotor at which the mean torque
+    #   peaks for THIS winding convention (maps T_p ~ cos(theta_e - alpha_p)
+    #   and currents cos(theta_e + comm + s_p): the mean torque is
+    #   proportional to cos(comm), so comm = 0 is the q-axis drive and
+    #   +/-90 deg is the zero-torque (pure d-axis) point.
     load_torque: float = 0.0
     load_viscous: float = 1.0e-4
     rotor_inertia: float = 2.0e-4
@@ -243,6 +248,19 @@ def _plot_outputs(data: dict[str, np.ndarray], path: Path) -> None:
     plt.close(fig)
 
 
+def _single_phase_current(result, phase: int, cfg: MotorConfig3D) -> float:
+    """Phase current [A] of a CONSTANT-amplitude unit solve.
+
+    Integrates the phase's positive-side Jz over the mid-plane -- NOT the
+    three-phase mean (which divides by three when the other two phases are
+    deliberately zeroed) and NOT angle-dependent (the amplitude is fixed).
+    """
+    phase_j = np.asarray(result.phase_current_density)
+    z_index = cfg.shape[2] // 2
+    jz_pos = np.maximum(phase_j[phase, :, :, z_index, 2], 0.0)
+    return max(float(np.sum(jz_pos)) * cfg.dx * cfg.dy, 1.0e-6)
+
+
 def compute_powered_maps(
     cfg: MotorConfig3D,
     logits: jnp.ndarray,
@@ -255,27 +273,30 @@ def compute_powered_maps(
     base_belts=None,
     include_mechanics: bool = True,
 ) -> dict:
-    """Solve PER-PHASE torque maps: T_p(theta) for each phase at unit drive.
+    """Per-phase LINEAR torque maps via +I/-I sign separation.
 
-    The transient then computes the electromagnetic torque from the
-    instantaneous phase currents, ``T_em = sum_p (I_p / I_nom_p) T_p(theta)``,
-    so the commutation angle genuinely enters the electromagnetics --
-    a single balanced-excitation map scaled by a current projection cannot
-    represent commutation at all.
+    Maxwell stress is quadratic in B, so a single solve at current a mixes
+    T(a) = T_PM + a*T_cross + a^2*T_I2 (cogging + linear coupling +
+    current-self terms) and cannot be scaled linearly by the transient's
+    actual currents.  Each phase is therefore solved at CONSTANT
+    amplitude +1 and -1 (the excitation is NOT modulated by cos(p*theta)
+    -- the transient applies the real currents itself, and modulating
+    twice manufactures a 2x-electrical-frequency artefact):
 
-    Each phase is solved ALONE (other belts zeroed) at every map angle:
-    3 x na solves, shared by every startup initial angle.  ``phase_solver``
-    overrides the default ``forward3d`` (e.g. to run on realized
-    constructed fields); ``base_belts`` supplies the winding's own phase
-    belts (e.g. from a CoilNetlist) instead of the analytic cosine belts.
+        T_lin[p] = (T(+1) - T(-1)) / 2    pure PM x current coefficient
+        T_static    = (T(+1) + T(-1)) / 2  PM-only + I^2 (grid-cogging dominated)
+
+    ``phase_solver`` overrides the default ``forward3d`` (e.g. realized
+    constructed fields); ``base_belts`` supplies the winding's own belts.
     """
     from organic_motor.optimization.objective3d import _phase_belts, forward3d
 
     if phase_solver is None:
-        def phase_solver(belts, angle):
+        def phase_solver(belts, angle, amplitudes):
             return forward3d(
                 cfg, logits, rotor_logits, magnetization_raw, [angle],
                 cfg.sm_temp_final, phase_belts_override=belts,
+                phase_amplitudes=amplitudes,
             )
 
     full = jnp.asarray(base_belts if base_belts is not None else _phase_belts(cfg))
@@ -284,27 +305,37 @@ def compute_powered_maps(
         jnp.stack([full[p] if q == p else zero for q in range(3)])
         for p in range(3)
     ]
+    one = jnp.asarray([1.0, 0.0, 0.0])
+    plus_amp = {p: jnp.roll(one, p) for p in range(3)}
+    minus_amp = {p: -plus_amp[p] for p in range(3)}
 
     na = len(angles)
-    torques_ph = np.zeros((3, na), dtype=np.float64)
+    t_lin = np.zeros((3, na), dtype=np.float64)
+    t_static = np.zeros(na, dtype=np.float64)
     j_maps_ph = np.zeros((3, na) + cfg.shape + (3,), dtype=np.float32)
     b_map = np.zeros((na,) + cfg.shape + (3,), dtype=np.float32)
     temperature_map = np.zeros((na,) + cfg.shape, dtype=np.float32)
     nominal = np.zeros(3, dtype=np.float64)
     last_result = None
     for p in range(3):
+        currents = []
         for i, angle in enumerate(angles):
-            result = phase_solver(singles[p], float(angle))
-            torques_ph[p, i] = float(result.torques[0])
-            j_maps_ph[p, i] = np.asarray(result.phase_current_density)[p]
+            r_plus = phase_solver(singles[p], float(angle), plus_amp[p])
+            r_minus = phase_solver(singles[p], float(angle), minus_amp[p])
+            t_plus = float(r_plus.torques[0])
+            t_minus = float(r_minus.torques[0])
+            t_lin[p, i] = 0.5 * (t_plus - t_minus)
             if p == 0:
-                b_map[i] = np.asarray(result.flux_density)
-                temperature_map[i] = np.asarray(result.temperature)
-            last_result = result
+                t_static[i] = 0.5 * (t_plus + t_minus)
+                b_map[i] = np.asarray(r_plus.flux_density)
+                temperature_map[i] = np.asarray(r_plus.temperature)
+            j_maps_ph[p, i] = np.asarray(r_plus.phase_current_density)[p]
+            currents.append(_single_phase_current(r_plus, p, cfg))
+            last_result = r_plus
             print(f"    [maps] phase {p} angle {i + 1}/{na} "
-                  f"T={torques_ph[p, i]:+.4f}", flush=True)
-        nominal[p] = _nominal_phase_current(last_result, cfg)
-    nominal = np.maximum(nominal, 1e-6)
+                  f"T+={t_plus:+.4f} T-={t_minus:+.4f} "
+                  f"lin={t_lin[p, i]:+.4f}", flush=True)
+        nominal[p] = float(np.mean(currents))
 
     period = 2.0 * np.pi / cfg.pole_pairs
     map_angles = np.mod(np.asarray(angles, dtype=float), period)
@@ -331,7 +362,8 @@ def compute_powered_maps(
     return {
         "map_angles": map_angles,
         "period": period,
-        "torques_ph": torques_ph,
+        "torques_ph": t_lin,
+        "torque_static": t_static,
         "j_maps_ph": jnp.asarray(j_maps_ph),
         "b_map": jnp.asarray(b_map),
         "temperature_map": temperature_map,

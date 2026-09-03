@@ -50,7 +50,7 @@ def test_powered_workflow_preserves_native_xyz_fields():
     cfg = MotorConfig3D(shape=(5, 5, 5), filt_radius=0.0, projection_beta=0.0)
     logits, rotor_logits, magnetization, _ = load_design3d(cfg, None)
 
-    def fake_forward(_belts, angle):
+    def fake_forward(_belts, angle, _amplitudes):
         shape = cfg.shape
         scalar = jnp.ones(shape)
         vector = jnp.zeros(shape + (3,))

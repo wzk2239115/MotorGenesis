@@ -126,6 +126,7 @@ def _phase_belts(cfg: MotorConfig3D, override: jnp.ndarray | None = None) -> jnp
 def three_phase_impressed_source3d(
     rho_copper: jnp.ndarray, electrical_angle: float, cfg: MotorConfig3D,
     phase_belts_override: jnp.ndarray | None = None,
+    phase_amplitudes: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return total and per-phase impressed ``Jz`` fields in A/m².
 
@@ -135,6 +136,13 @@ def three_phase_impressed_source3d(
     EXACTLY (a solenoidal impressed source; severing the columns at the
     stack ends breaks current continuity and the Coulomb-gauge penalty
     then absorbs most of the armature field).
+
+    ``phase_amplitudes`` (optional (3,) array) overrides the cos(elec-phi)
+    excitation with CONSTANT per-phase amplitudes -- required when
+    building per-phase torque maps: the map must be the torque at a fixed
+    unit current, NOT modulated by cos(p*theta) (the transient multiplies
+    the actual currents separately; modulating twice manufactures a
+    2x-electrical-frequency artefact).
 
     The angular restriction to discrete slot sectors (from the netlist
     belts) keeps end-turn copper from injecting axial current at wrong
@@ -148,10 +156,13 @@ def three_phase_impressed_source3d(
         cfg.shape,
     )
     mid_z = cfg.shape[2] // 2
-    phase_currents = jnp.cos(
-        electrical_angle
-        - jnp.asarray((0.0, 2.0 * jnp.pi / 3.0, 4.0 * jnp.pi / 3.0))
-    )
+    if phase_amplitudes is not None:
+        phase_currents = jnp.asarray(phase_amplitudes)
+    else:
+        phase_currents = jnp.cos(
+            electrical_angle
+            - jnp.asarray((0.0, 2.0 * jnp.pi / 3.0, 4.0 * jnp.pi / 3.0))
+        )
     sources = []
     tiny = 1e-12
     for phase in range(3):
@@ -304,6 +315,7 @@ def _forward3d_core(
     magnetization_raw: jnp.ndarray,
     angles: Sequence[float] | jnp.ndarray | None,
     phase_belts_override: jnp.ndarray | None = None,
+    phase_amplitudes: jnp.ndarray | None = None,
 ) -> ForwardResult3D:
     """Body of :func:`forward3d` once the topology fields are assembled.
 
@@ -335,6 +347,7 @@ def _forward3d_core(
         else:
             jz, phase_jz = three_phase_impressed_source3d(
                 fields.rho_copper, electrical_angle, cfg, phase_belts_override,
+                phase_amplitudes,
             )
             zeros = jnp.zeros_like(jz)
             J = jnp.stack((zeros, zeros, jz), axis=-1)
@@ -429,6 +442,7 @@ def forward3d(
     angles: Sequence[float] | jnp.ndarray | None = None,
     temperature: float | None = None,
     phase_belts_override: jnp.ndarray | None = None,
+    phase_amplitudes: jnp.ndarray | None = None,
 ) -> ForwardResult3D:
     """Run native 3-D Maxwell solves at multiple mechanical rotor angles.
 
@@ -436,7 +450,7 @@ def forward3d(
     runs the shared physics core.  This is the optimisation-time entry point.
     """
     fields = assemble3d(logits, rotor_logits, cfg, temperature)
-    return _forward3d_core(cfg, fields, magnetization_raw, angles, phase_belts_override)
+    return _forward3d_core(cfg, fields, magnetization_raw, angles, phase_belts_override, phase_amplitudes)
 
 
 def forward3d_fields(
@@ -445,6 +459,7 @@ def forward3d_fields(
     magnetization_raw: jnp.ndarray,
     angles: Sequence[float] | jnp.ndarray | None = None,
     phase_belts_override: jnp.ndarray | None = None,
+    phase_amplitudes: jnp.ndarray | None = None,
 ) -> ForwardResult3D:
     """Critic entry point: score an already-assembled constructed topology.
 
@@ -455,10 +470,12 @@ def forward3d_fields(
 
     If ``phase_belts_override`` is provided (from a CoilNetlist), the solver
     uses the actual winding topology instead of the analytic cosine phase
-    belts.  This is what makes the visible winding and the solved winding
-    the same object.
+    belts.  ``phase_amplitudes`` overrides the cos(elec-phi) excitation with
+    constant per-phase amplitudes (unit-current per-phase maps).
     """
-    return _forward3d_core(cfg, fields, magnetization_raw, angles, phase_belts_override)
+    return _forward3d_core(
+        cfg, fields, magnetization_raw, angles, phase_belts_override, phase_amplitudes
+    )
 
 
 def _anchor_seeds(cfg: MotorConfig3D) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:

@@ -36,7 +36,7 @@ def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--angles", type=int, default=4, help="startup initial angles")
     ap.add_argument("--map-angles", type=int, default=6, help="torque-map angles")
-    ap.add_argument("--steps", type=int, default=8000)
+    ap.add_argument("--steps", type=int, default=6000)
     ap.add_argument("--dt", type=float, default=2.0e-5)
     ap.add_argument("--voltage", type=float, default=24.0)
     ap.add_argument("--current-limit", type=float, default=50.0)
@@ -44,7 +44,12 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--inertia", type=float, default=2.0e-4)
     ap.add_argument("--jpeak", type=float, default=5.0e6,
                     help="impressed current density peak [A/m^2]")
-    ap.add_argument("--torque-radius", type=float, default=0.0297,
+    ap.add_argument("--comm", type=float, default=3.1415927,
+                    help="commutation offset [rad]; mean torque ~ cos(comm), "
+                         "0/180 deg select the sign for this convention")
+    ap.add_argument("--maxwell-iters", type=int, default=300,
+                    help="Maxwell CG iterations (torque converges ~300)")
+    ap.add_argument("--torque-radius", type=float, default=0.0287,
                     help="Maxwell stress surface radius [m] (must be in the air gap)")
     ap.add_argument("--out", type=Path, default=Path("startup_out"))
     return ap
@@ -60,7 +65,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         mechanical_angles=args.map_angles,
         current_density_peak=args.jpeak,
         R_torque=args.torque_radius,
-        maxwell_maxiter=80,
+        maxwell_maxiter=args.maxwell_iters,
         thermal_maxiter=160,
         electric_maxiter=80,
         n_theta=32,
@@ -94,9 +99,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         dt=args.dt,
         voltage=args.voltage,
         current_limit=args.current_limit,
+        commutation_offset=args.comm,
         load_torque=args.load,
         rotor_inertia=args.inertia,
-        maxwell_maxiter=80,
+        maxwell_maxiter=args.maxwell_iters,
         thermal_maxiter=160,
         electric_maxiter=80,
     )
