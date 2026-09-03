@@ -25,3 +25,6 @@ organic_motor/out/
 # JAX / OS
 *.jaxpr
 .DS_Store
+# Startup validation experiment outputs (regenerable)
+startup_*/
+powered3d_out/
