@@ -32,8 +32,29 @@ def realize(
     solver's own rotor-design region, so rotation in the critic matches the
     geometry.  ``magnetization_raw`` is the per-voxel magnetisation direction
     (or zeros if none was supplied).
+
+    Materials listed in ``mf.metadata["nonmagnetic_regions"]`` (SDF regions
+    such as the retaining sleeve, which must be STRUCTURAL iron but
+    NON-MAGNETIC like the real Inconel/carbon-fibre sleeve) are moved from
+    ``rho_iron`` to ``rho_air`` before the solve: a mu_r = 2000 sleeve
+    shunts the pole flux, and the shunt resolves ever better with grid
+    refinement -- which is exactly the monotonic fine-grid torque decline
+    the convergence ladder caught.  Structurally and visually they remain
+    iron.
     """
     densities = mf.to_densities(bandwidth)
+    regions = mf.metadata.get("nonmagnetic_regions", ()) if hasattr(mf, "metadata") else ()
+    if regions:
+        rho_iron = np.asarray(densities["iron"], dtype=np.float32)
+        rho_air = np.asarray(densities["air"], dtype=np.float32)
+        for sdf_field in regions:
+            nm = np.asarray(sdf_field.to_density(bandwidth), dtype=np.float32)
+            moved = np.minimum(nm, rho_iron)
+            rho_iron = (rho_iron - moved).astype(np.float32)
+            rho_air = (rho_air + moved).astype(np.float32)
+        densities = dict(densities)
+        densities["iron"] = rho_iron
+        densities["air"] = rho_air
     rotor_design = np.asarray(domain_masks3d(cfg)["rotor_design"], dtype=np.float32)
     fields = TopologyFields3D(
         rho_air=jnp.asarray(densities["air"]),

@@ -237,8 +237,14 @@ def evaluate_verdicts(
     if torque_convergence is not None:
         detail["torque"] = torque_convergence
         t1_change = abs(float(torque_convergence.get("t1_amplitude_change_pct", 100.0)))
-        t0_change = abs(float(torque_convergence.get("t0_rms_change_pct", 100.0)))
-        detail["torque_stable"] = bool(max(t1_change, t0_change) <= 5.0)
+        # T1 gates at 5% relative; T0 cogging additionally allows an
+        # absolute floor (0.015 N*m) because it is a small difference of
+        # large stresses with a measured localisation noise floor.
+        t0_abs = abs(float(torque_convergence.get("t0_rms_fine_Nm", 1.0))
+                     - float(torque_convergence.get("t0_rms_physics_Nm", 0.0)))
+        t0_gate = max(0.05 * float(torque_convergence.get("t0_rms_physics_Nm", 1.0)), 0.015)
+        detail["t0_gate_Nm"] = t0_gate
+        detail["torque_stable"] = bool(t1_change <= 5.0 and t0_abs <= t0_gate)
         passed = bool(topology_stable and detail["torque_stable"])
     elif topology_stable is not None:
         # Topology-only convergence: honest "None" -- quantitative torque

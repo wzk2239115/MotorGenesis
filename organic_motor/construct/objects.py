@@ -695,6 +695,14 @@ class RotorSleeve:
             return mf
         sleeve = _annulus(cfg, r_inner, r_outer, hz)
         mf.add(sleeve, "iron", priority=True)
+        # The sleeve is STRUCTURAL iron but must be NON-MAGNETIC, like the
+        # real Inconel / carbon-fibre retaining sleeve: a mu_r = 2000 sleeve
+        # shunts the pole flux circumferentially, and the shunt resolves
+        # ever better with grid refinement (the monotonic fine-grid torque
+        # decline the convergence ladder caught).  realize() subtracts the
+        # listed regions from rho_iron (they become air magnetically)
+        # while everything else about them stays iron.
+        mf.metadata.setdefault("nonmagnetic_regions", []).append(sleeve)
         return mf
 
 

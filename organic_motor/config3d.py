@@ -31,11 +31,23 @@ class MotorConfig3D(MotorConfig):
     R_rotor_outer: float = 0.0216
     R_sleeve_outer: float = 0.0275
     R_torque: float = 0.0290
+    # Maxwell-stress surface averaging: 3 cylinders at R_torque +/- 0.2/0.4mm.
+    # A single mid-gap cylinder localises the integral; cogging (a small
+    # difference of large stresses) moved 3.4x when the radius shifted by
+    # 0.4mm on the 112^3 grid.
+    torque_r_average: int = 3
+    torque_r_pitch: float = 0.0004
     R_stator_inner: float = 0.0305
     R_winding_inner: float = 0.0305
     stack_length: float = 0.060
     axial_airgap: float = 0.001
     excitation_mode: str = "terminal"
+    impressed_end_closure: bool = True
+    # ^ close the impressed phase loops INSIDE the domain (axial columns
+    #   confined to the stack + azimuthal end-turn arc currents) instead of
+    #   letting them leave through the box end faces, where the solver's
+    #   boundary zeroing silently deletes part of the source (~8%% torque
+    #   overestimate from the infinite-solenoid column field).
     terminal_voltage: float | None = None
     electric_sigma_void: float = 5.8
     electric_simp_p: float = 2.0

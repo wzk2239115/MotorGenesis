@@ -69,7 +69,35 @@ def maxwell_force_torque(Bx: jnp.ndarray, By: jnp.ndarray, Bz: jnp.ndarray,
 
     Returns ``(force_xyz, torque_xyz)`` in N and N.m.  Midpoint quadrature is
     used on every surface, avoiding duplicated seams and the polar singularity.
+
+    ``cfg.torque_r_average`` (>1) averages the whole closed surface over
+    several radii around ``R_torque``: a single mid-gap cylinder localises
+    the stress integral, and for small-difference-of-large-stresses
+    quantities (cogging) the single-radius value can move several times
+    when the surface shifts by a fraction of a cell.  The average is the
+    flux-consistent estimator; the per-radius spread is the localisation
+    error bar.
     """
+    n_r_avg = int(getattr(cfg, "torque_r_average", 1))
+    if n_r_avg > 1 and radius is None:
+        from dataclasses import replace as _replace
+
+        _xs, _ys, _zs = _coordinates(cfg)
+        base_r = float(getattr(
+            cfg, "R_torque", 0.4 * min(_xs[-1] - _xs[0], _ys[-1] - _ys[0])
+        ))
+        offsets = (jnp.arange(n_r_avg) - 0.5 * (n_r_avg - 1)) * getattr(
+            cfg, "torque_r_pitch", 0.0004
+        )
+        results = [
+            maxwell_force_torque(
+                Bx, By, Bz, _replace(cfg, torque_r_average=1, R_torque=base_r + float(off))
+            )
+            for off in offsets
+        ]
+        force = sum(r[0] for r in results) / len(results)
+        torque = sum(r[1] for r in results) / len(results)
+        return force, torque
     nx, ny, nz = _shape(cfg)
     xs, ys, zs = _coordinates(cfg)
     if center is None:

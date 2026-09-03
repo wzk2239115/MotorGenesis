@@ -123,6 +123,78 @@ def _phase_belts(cfg: MotorConfig3D, override: jnp.ndarray | None = None) -> jnp
     )
 
 
+def _end_closure_currents(
+    phase_jz: jnp.ndarray, cfg: MotorConfig3D, belts: jnp.ndarray,
+    n_slots: int = 12, coil_span: int = 3,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Azimuthal end-turn currents closing each phase's loops IN-DOMAIN.
+
+    The z-uniform belt columns leave the box through the end faces; the
+    solver boundary-zeroes the RHS there, which silently deletes part of
+    the source and makes the effective source non-solenoidal (measured
+    effective div(J_rhs) ~ 0.24 on the old geometry).  This constructs the
+    physical return path instead: per coil (slot s <-> slot s+coil_span),
+    an arc current in the end slabs at the phase's own radial band carries
+    the column current from the + side to the - side at the top and back
+    at the bottom -- exactly the real end winding, as a vector source.
+
+    Arc current density is flux-matched to its columns:
+    ``J_arc = J_col * (slot-sector arc length) / (end-slab thickness)``,
+    so the TOTAL current around each loop is preserved on the voxel grid.
+    """
+    nx, ny, nz = cfg.shape
+    X, Y, Z = meshgrid3d(cfg)
+    cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
+    r = jnp.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    theta = jnp.arctan2(Y - cy, X - cx)
+    hz = cfg.stator_half_length
+    t_end = max(3.0 * cfg.dz, 0.0035)  # end-slab thickness
+    pitch = 2.0 * jnp.pi / n_slots
+
+    top_slab = ((Z - cz > hz) & (Z - cz <= hz + t_end)).astype(jnp.float32)
+    bot_slab = ((cz - Z > hz) & (cz - Z <= hz + t_end)).astype(jnp.float32)
+    stack_window = (jnp.abs(Z - cz) <= hz).astype(jnp.float32)
+
+    r_mid = 0.5 * (cfg.R_winding_inner + cfg.R_winding_outer)
+    arc_gain = (r_mid * pitch) / t_end
+
+    th_hat_x = -jnp.sin(theta)
+    th_hat_y = jnp.cos(theta)
+    mid_z = nz // 2
+    theta_mid = theta[:, :, mid_z]
+    jx_all = jnp.zeros((3, nx, ny, nz), dtype=phase_jz.dtype)
+    jy_all = jnp.zeros((3, nx, ny, nz), dtype=phase_jz.dtype)
+    for phase in range(3):
+        any_band3 = jnp.broadcast_to(
+            jnp.any(jnp.abs(belts[phase]) > 0, axis=2)[..., None], (nx, ny, nz)
+        )
+        belt_mid = belts[phase][:, :, mid_z]
+        amp = jnp.maximum(jnp.max(jnp.abs(phase_jz[phase])), 1e-30)
+        for slot in range(n_slots):
+            theta_s = slot * pitch
+            partner = (slot + coil_span) % n_slots
+            d = jnp.mod(partner * pitch - theta_s + jnp.pi, 2 * jnp.pi) - jnp.pi
+            near_s = jnp.abs(
+                jnp.mod(theta_mid - theta_s + jnp.pi, 2 * jnp.pi) - jnp.pi
+            ) <= 0.5 * pitch
+            sign_s = jnp.sign(jnp.sum(belt_mid * near_s))
+            centre = theta_s + 0.5 * d
+            in_arc = jnp.abs(
+                jnp.mod(theta - centre + jnp.pi, 2 * jnp.pi) - jnp.pi
+            ) <= 0.5 * jnp.abs(d)
+            window = (any_band3 & in_arc).astype(jnp.float32)
+            # Top: current from the + side to the - side; bottom: reverse.
+            mag = amp * sign_s * jnp.sign(d) * arc_gain
+            slab = mag * (top_slab - bot_slab)
+            jx_all = jx_all.at[phase].set(
+                jx_all[phase] + th_hat_x * window * slab
+            )
+            jy_all = jy_all.at[phase].set(
+                jy_all[phase] + th_hat_y * window * slab
+            )
+    return jx_all, jy_all, stack_window
+
+
 def three_phase_impressed_source3d(
     rho_copper: jnp.ndarray, electrical_angle: float, cfg: MotorConfig3D,
     phase_belts_override: jnp.ndarray | None = None,
@@ -350,7 +422,23 @@ def _forward3d_core(
                 phase_amplitudes,
             )
             zeros = jnp.zeros_like(jz)
-            J = jnp.stack((zeros, zeros, jz), axis=-1)
+            if getattr(cfg, "impressed_end_closure", False):
+                # Close every phase loop INSIDE the domain: columns are
+                # confined to the stack and azimuthal end-turn arc currents
+                # carry the return path (see _end_closure_currents).  The
+                # saved phase_current keeps the axial columns only -- the
+                # nominal-current and loss consumers are unchanged, and the
+                # end closure is a source-completion device, not a thermal
+                # model of the end winding.
+                belts = _phase_belts(cfg, phase_belts_override)
+                jx, jy, stack_window = _end_closure_currents(
+                    phase_jz, cfg, belts,
+                )
+                jz = jz * stack_window
+                phase_jz = phase_jz * stack_window[None]
+                J = jnp.stack((jnp.sum(jx, axis=0), jnp.sum(jy, axis=0), jz), axis=-1)
+            else:
+                J = jnp.stack((zeros, zeros, jz), axis=-1)
             phase_current = jnp.stack(
                 (
                     jnp.zeros_like(phase_jz),
