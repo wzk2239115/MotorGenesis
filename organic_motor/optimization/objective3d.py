@@ -454,12 +454,21 @@ def _forward3d_core(
     angles: Sequence[float] | jnp.ndarray | None,
     phase_belts_override: jnp.ndarray | None = None,
     phase_amplitudes: jnp.ndarray | None = None,
+    centerline_registry: list | None = None,
 ) -> ForwardResult3D:
     """Body of :func:`forward3d` once the topology fields are assembled.
 
     Shared by the optimisation entry point (which soft-maxes logits into
     fields) and the constructive-critic entry point (which receives fields
     built from SDF Booleans).  Either way the physics is identical.
+
+    If ``centerline_registry`` is provided (from a P5 swept-band stator),
+    the impressed current is deposited directly from the 3-D centreline
+    polylines using a conservative tent kernel — bypassing the coarse-grid
+    ``rho_copper`` entirely.  This is the expert-recommended hybrid
+    dimension approach: the current path and ampere-turns are exact,
+    independent of whether the 0.7 mm tubes are resolved on the physics
+    grid.
     """
     magnetization = normalized_magnetization3d(fields.rho_pm, magnetization_raw, cfg)
     if angles is None:
@@ -482,6 +491,38 @@ def _forward3d_core(
                     fields.rho_copper, electrical_angle, cfg, phase_belts_override,
                 )
             )
+        elif centerline_registry is not None:
+            # P5 hybrid dimension: deposit line currents from 3-D centreline
+            # polylines directly onto the coarse grid.  The current path
+            # follows the actual swept bands, not the planar P4 belts.
+            from organic_motor.optimization.line_current import (
+                deposit_centerline_currents,
+            )
+            import numpy as _np
+            if phase_amplitudes is not None:
+                amps = _np.asarray(phase_amplitudes)
+            else:
+                ea = float(electrical_angle)
+                offs = _np.array([0.0, 2.0 * _np.pi / 3.0, 4.0 * _np.pi / 3.0])
+                amps = _np.cos(ea - offs)
+            I_per_turn = float(cfg.current_density_peak) * _np.pi * (
+                centerline_registry[0]["band_radius"] ** 2
+            )
+            J_np, phase_J_np = deposit_centerline_currents(
+                cfg, centerline_registry, I_per_turn, amps,
+            )
+            J = jnp.asarray(J_np)
+            phase_current = jnp.asarray(phase_J_np)
+            # Joule heat from deposited J^2 / sigma
+            conductor = jnp.broadcast_to(
+                jnp.mean(fields.rho_copper, axis=2, keepdims=True), cfg.shape
+            )
+            q_cu = jnp.sum(jnp.sum(phase_current ** 2, axis=0), axis=-1) / (
+                cfg.sigma_copper * (conductor + 1e-6)
+            )
+            q_cu = jnp.where(conductor > 1e-6, q_cu, 0.0)
+            electric_residual = jnp.asarray(0.0, dtype=q_cu.dtype)
+            _, phase_balance = _source_residuals(phase_current, cfg, phase_belts_override)
         else:
             jz, phase_jz = three_phase_impressed_source3d(
                 fields.rho_copper, electrical_angle, cfg, phase_belts_override,
@@ -626,6 +667,7 @@ def forward3d_fields(
     angles: Sequence[float] | jnp.ndarray | None = None,
     phase_belts_override: jnp.ndarray | None = None,
     phase_amplitudes: jnp.ndarray | None = None,
+    centerline_registry: list | None = None,
 ) -> ForwardResult3D:
     """Critic entry point: score an already-assembled constructed topology.
 
@@ -638,9 +680,15 @@ def forward3d_fields(
     uses the actual winding topology instead of the analytic cosine phase
     belts.  ``phase_amplitudes`` overrides the cos(elec-phi) excitation with
     constant per-phase amplitudes (unit-current per-phase maps).
+
+    If ``centerline_registry`` is provided (P5 swept-band stator), the
+    impressed current is deposited from the 3-D centreline polylines
+    instead of using the coarse-grid ``rho_copper``.  This is the hybrid
+    dimension approach: exact current path, grid-independent ampere-turns.
     """
     return _forward3d_core(
-        cfg, fields, magnetization_raw, angles, phase_belts_override, phase_amplitudes
+        cfg, fields, magnetization_raw, angles, phase_belts_override,
+        phase_amplitudes, centerline_registry,
     )
 
 

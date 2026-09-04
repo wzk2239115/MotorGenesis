@@ -1517,8 +1517,9 @@ class StatorCell:
         cz = cfg.center[2]
         zc = netlist.coil_zc(cfg)
         r_k, amp = self._band_radii(cfg)
-        table = {t: ph for t, ph, _ in netlist.coil_table()}
-        phase = table[self.tooth_index]
+        table = {t: (ph, pol) for t, ph, pol in netlist.coil_table()}
+        phase, polarity = table[self.tooth_index]
+        cross_area = np.pi * self.band_radius ** 2
 
         copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
         phase_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
@@ -1532,6 +1533,17 @@ class StatorCell:
                                         pts, self.band_radius, grid=grid)
             copper_sdf = np.minimum(copper_sdf, band)
             phase_sdf = np.minimum(phase_sdf, band)
+
+            # Register centerline as source of truth for line-current deposition
+            mf.metadata.setdefault("centerline_registry", []).append({
+                "points": pts.copy(),
+                "phase": phase,
+                "polarity": polarity,
+                "turn": k,
+                "tooth": self.tooth_index,
+                "cross_section_area": float(cross_area),
+                "band_radius": float(self.band_radius),
+            })
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin),
                "copper", priority=True)

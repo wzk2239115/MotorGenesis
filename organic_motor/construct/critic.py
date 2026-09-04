@@ -40,7 +40,8 @@ def score(
     if angles is None:
         count = int(getattr(cfg, "mechanical_angles", 3))
         angles = jnp.arange(count) * (2.0 * np.pi / (cfg.pole_pairs * count))
-    result = forward3d_fields(cfg, fields, mag, angles)
+    result = forward3d_fields(cfg, fields, mag, angles,
+                              centerline_registry=mf.metadata.get("centerline_registry"))
     _obj, comps = objective3d(cfg, result)
     metrics = {key: float(value) for key, value in comps.items()}
     metrics["obj"] = float(_obj)
@@ -77,7 +78,8 @@ def score_fields(
     if angles is None:
         count = int(getattr(cfg, "mechanical_angles", 3))
         angles = jnp.arange(count) * (2.0 * np.pi / (cfg.pole_pairs * count))
-    result = forward3d_fields(cfg, fields, mag, angles, phase_belts_override)
+    result = forward3d_fields(cfg, fields, mag, angles, phase_belts_override,
+                              centerline_registry=mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None)
     _obj, comps = objective3d(cfg, result)
     metrics = {key: float(value) for key, value in comps.items()}
     metrics["obj"] = float(_obj)
