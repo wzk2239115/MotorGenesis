@@ -106,36 +106,36 @@ class CoilNetlist:
         return coils
 
     def _slot_phase(self, slot: int) -> int:
-        """Phase owning a slot: argmax |cos(p*theta_slot - phi_p)|.
+        """Phase owning a slot: 60-degree belt on EXACT integer arithmetic.
 
-        The standard 60-degree phase-belt rule, IDENTICAL to the solver's
-        analytic ``_phase_belts`` at slot centres: around the machine the
-        phases run A, C', B, A', C, B' ...  With the solver convention
-        ``electrical_angle = +p*theta`` and currents cos(elec - phi_p),
-        this spatial sequence produces a FORWARD-rotating MMF (all three
-        layers' fundamentals align: alpha_p - phi_p = 0).
+        The electrical angle of slot ``s`` is ``360 * p * s / n_slots``
+        degrees.  For 12s10p it lands exactly BETWEEN two phase axes for
+        every other slot, and a float ``argmax |cos|`` lets last-ulp noise
+        decide the tie -- which silently shredded one phase of the winding
+        (measured T1: A 0.024 vs B/C 0.285 N*m).  The belt index is
+        instead quantised with exact integer round-half-up,
+        ``k = (6*p*s + n_slots/2) // n_slots  (mod 6)`` -- deterministic
+        and balanced for every slot/pole combination, and identical to
+        the documented A, C', B, A', C, B' rotation for integral-slot
+        windings (n_slots = 6*k).
         """
-        theta = slot * 2.0 * np.pi / self.n_slots
-        best_phase, best_abs = 0, -1.0
-        for p in range(self.n_phases):
-            c = abs(np.cos(self.pole_pairs * theta - p * 2.0 * np.pi / self.n_phases))
-            if c > best_abs:
-                best_abs, best_phase = c, p
-        return best_phase
+        num = 6 * self.pole_pairs * slot
+        den = self.n_slots
+        k = ((num + den // 2) // den) % 6
+        return (0, 2, 1, 0, 2, 1)[k]
 
     def _slot_polarity(self, slot: int, layer: int) -> int:
-        """Coil-side sign at (slot, layer): sign of the owning cosine.
+        """Coil-side sign at (slot, layer): the belt's own cosine sign.
 
-        The sign follows the phase belt's own cosine (the winding-table
-        entry polarity), not pole parity -- pole-parity signs flip one
-        phase globally and inject a negative-sequence component that
-        collapses the torque.  All layers of a slot share the polarity:
-        they are parallel paths of the same coil.
+        All layers of a slot share the polarity: they are parallel paths
+        of the same coil.  Sign from the same integer belt ``k`` as the
+        phase (positive on the axis, negative between -- exactly the
+        sign of cos(alpha - phi_p) at the quantised belt).
         """
-        theta = slot * 2.0 * np.pi / self.n_slots
-        phase = self._slot_phase(slot)
-        c = np.cos(self.pole_pairs * theta - phase * 2.0 * np.pi / self.n_phases)
-        return 1 if c >= 0.0 else -1
+        num = 6 * self.pole_pairs * slot
+        den = self.n_slots
+        k = ((num + den // 2) // den) % 6
+        return 1 if k in (0, 2, 4) else -1
 
     def slot_phase_assignment(self) -> np.ndarray:
         """Return ``(n_slots,)`` int array: phase index per slot (0=A,1=B,2=C)."""
@@ -271,6 +271,135 @@ def default_netlist(cfg: MotorConfig3D) -> CoilNetlist:
         n_phases=3,
         coil_span=3,
         n_layers=4,
+        turns_per_coil=1,
+        connection="star",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Printed concentrated winding (12-slot / 10-pole)
+# ---------------------------------------------------------------------------
+
+# Angular geometry of one printed stator cell, in radians, measured from the
+# TOOTH centre line.  One slot pitch is 30 deg; the cell is
+#
+#     tooth flank | clad | copper side | liner | wall/separator | ...
+#
+#   -TOOTH_HALF .. +TOOTH_HALF          iron tooth wedge
+#   +/-CLAD_HALF                         insulator cladding on the flanks
+#   +/-FRAME_HALF                        the copper frame around the tooth
+#   +/-SLOT_HALF (= pitch/2)             cell boundary at the slot centre
+PRINTED_TOOTH_HALF = np.deg2rad(7.5)
+PRINTED_CLAD_HALF = np.deg2rad(8.44)     # tooth + 0.6mm cladding at r ~ 36.75mm
+PRINTED_FRAME_HALF = np.deg2rad(13.8)    # copper frame; wall gap 0.6 deg to slot centre
+PRINTED_SLOT_HALF = np.deg2rad(15.0)     # slot centre = boundary to the next cell
+PRINTED_END_BAND = 0.0035                # coil bridge axial thickness beyond the stack
+
+
+@dataclass
+class PrintedCoilNetlist(CoilNetlist):
+    """Concentrated 12s10p winding for the printed stator: one coil per tooth.
+
+    Electrical topology (the classic 12-slot 10-pole concentrated winding,
+    winding factor 0.933): every tooth carries ONE printed coil loop whose
+    two sides occupy the HALF-SLOTS flanking it, so all coil sides sit at
+    the same radii and the three phases are geometrically IDENTICAL -- the
+    radial-layer asymmetry of the distributed winding dies here.  Each coil
+    is an independent printed loop (hollow conductor with an internal
+    cooling channel); the four coils of a phase are wired externally.
+
+    Phase/sign table per tooth n (standard 60-degree-belt rule, identical
+    to ``CoilNetlist`` for 12s10p):  A+ B+ B- C- C+ A+ A- B- B+ C+ C- A-.
+    """
+
+    coil_span: int = 1
+    n_layers: int = 1
+    turns_per_coil: int = 1
+
+    def coil_table(self) -> list[tuple[int, int, int]]:
+        """``[(tooth, phase, polarity), ...]`` for all 12 coils."""
+        return [
+            (n, int(self._slot_phase(n)), int(self._slot_polarity(n, 0)))
+            for n in range(self.n_slots)
+        ]
+
+    def expected_phase_components(self) -> np.ndarray:
+        """Four independent printed loops per phase (externally wired)."""
+        per_phase = self.n_slots // self.n_phases
+        return np.full(self.n_phases, per_phase, dtype=np.int32)
+
+    def coil_zc(self, cfg: MotorConfig3D) -> float:
+        """Half the axial extent of the copper frame (stack + end band)."""
+        return cfg.stator_half_length + PRINTED_END_BAND
+
+    def phase_belts_3d(self, cfg: MotorConfig3D) -> np.ndarray:
+        """``(3, Nx, Ny, Nz)`` belts: +/-1 in the frame's two side bands.
+
+        Every voxel is attributed to the NEAREST tooth (slot-pitch cells,
+        exactly the printed geometry), the side band between the tooth
+        cladding and the frame edge carries the coil current: the ``u < 0``
+        side is the GO side (+polarity), the ``u > 0`` side the RETURN.
+        Belts are z-UNIFORM (divergence-free columns); the end-turn bridges
+        are supplied by the printed end-closure currents in
+        :func:`_printed_end_closure_currents`.
+        """
+        nx, ny, nz = cfg.shape
+        _X, _Y, _Z, r, theta = _polar_grid(cfg)
+        pitch = 2.0 * np.pi / self.n_slots
+        n_tooth = np.mod(np.round(theta / pitch).astype(np.int32), self.n_slots)
+        u = np.mod(theta - n_tooth * pitch + np.pi, 2.0 * np.pi) - np.pi
+
+        r_wi = cfg.R_winding_inner
+        r_wo = cfg.R_winding_outer - 0.0005  # frame outer edge leaves an air slot-back
+        in_side = (np.abs(u) >= PRINTED_CLAD_HALF) & (np.abs(u) <= PRINTED_FRAME_HALF)
+        in_radial = (r >= r_wi) & (r <= r_wo)
+
+        phase = np.zeros((nx, ny), dtype=np.int8)
+        sign = np.zeros((nx, ny), dtype=np.float32)
+        table = {tooth: (ph, pol) for tooth, ph, pol in self.coil_table()}
+        for tooth in range(self.n_slots):
+            sel = n_tooth == tooth
+            ph, pol = table[tooth]
+            phase[sel] = ph
+            sign[sel] = pol
+        # u < 0 -> go side (+), u > 0 -> return side (-)
+        dirn = np.where(u < 0.0, 1.0, -1.0).astype(np.float32)
+
+        belts = np.zeros((3, nx, ny, nz), dtype=np.float32)
+        mask2d = (in_side & in_radial).astype(np.float32)
+        for p in range(3):
+            sel = (mask2d * (phase == p)).astype(np.float32)
+            belts[p] = np.broadcast_to((sel * sign * dirn)[..., None], (nx, ny, nz))
+        return belts
+
+    def summary(self) -> dict:
+        base = super().summary()
+        base["style"] = "printed_concentrated"
+        return base
+
+
+def _polar_grid(cfg: MotorConfig3D):
+    nx, ny, nz = cfg.shape
+    cx, cy = cfg.center[0], cfg.center[1]
+    dx, dy = cfg.spacing[0], cfg.spacing[1]
+    ox, oy = cfg.origin[0], cfg.origin[1]
+    x = ox + dx * np.arange(nx, dtype=np.float32)
+    y = oy + dy * np.arange(ny, dtype=np.float32)
+    z = np.zeros(1, dtype=np.float32)
+    X, Y, _ = np.meshgrid(x, y, z, indexing="ij")
+    r = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    theta = np.arctan2(Y - cy, X - cx)
+    return X[..., 0], Y[..., 0], np.zeros((nx, ny, 1)), r[..., 0], theta[..., 0]
+
+
+def printed_netlist(cfg: MotorConfig3D) -> PrintedCoilNetlist:
+    """The netlist of the printed concentrated stator for ``cfg``."""
+    return PrintedCoilNetlist(
+        n_slots=12,
+        pole_pairs=cfg.pole_pairs,
+        n_phases=3,
+        coil_span=1,
+        n_layers=1,
         turns_per_coil=1,
         connection="star",
     )

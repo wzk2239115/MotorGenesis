@@ -27,7 +27,17 @@ from organic_motor.construct.field import (
 
 
 MATERIALS = ("iron", "copper", "pm")
-LABELS = {**{"air": 0}, **{m: i + 1 for i, m in enumerate(MATERIALS)}}
+# Solver-facing solids: iron (mu_r large), copper (conductor), pm.  The
+# display/audit-facing materials below are NON-magnetic and NON-conductive:
+# for the differentiable critic they are AIR (they ride inside rho_air via
+# the complement in to_densities), which is exactly their electromagnetic
+# role -- insulator is a dielectric, coolant is fluid.  Connectivity,
+# powder-escape and overhang audits treat them as real solids.
+AUX_MATERIALS = ("insulator", "coolant")
+LABELS = {
+    **{"air": 0},
+    **{m: i + 1 for i, m in enumerate(MATERIALS + AUX_MATERIALS)},
+}
 
 
 @dataclass
@@ -102,10 +112,10 @@ class MaterialField:
         return solids
 
     def label(self) -> np.ndarray:
-        """Integer material labels: 0 air, 1 iron, 2 copper, 3 PM."""
+        """Integer material labels: 0 air, 1 iron, 2 copper, 3 PM, 4 insulator, 5 coolant."""
         label = np.zeros(self.shape, dtype=np.int8)
         best = np.full(self.shape, 0.0, dtype=np.float32)
-        for material in MATERIALS:
+        for material in MATERIALS + AUX_MATERIALS:
             if material not in self.sdfs:
                 continue
             inside = self.sdfs[material].sdf < 0.0
@@ -119,6 +129,14 @@ class MaterialField:
         from organic_motor.geometry.voxel import VoxelVolume
 
         densities = self.to_densities()
+        insulator = (
+            self.sdfs["insulator"].to_density()
+            if "insulator" in self.sdfs else None
+        )
+        coolant = (
+            self.sdfs["coolant"].to_density()
+            if "coolant" in self.sdfs else None
+        )
         return VoxelVolume(
             iron=densities["iron"],
             pm=densities["pm"],
@@ -126,6 +144,8 @@ class MaterialField:
             origin=self.origin,
             copper=densities["copper"],
             air=densities["air"],
+            insulator=insulator,
+            coolant=coolant,
         )
 
     def materials_present(self) -> list[str]:

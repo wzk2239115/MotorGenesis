@@ -666,6 +666,437 @@ class HelicalCoolingChannels:
         return mf
 
 
+# ---------------------------------------------------------------------------
+# Printed multi-material stator (P4 topology)
+# ---------------------------------------------------------------------------
+
+
+def _sector_sdf(
+    cfg: MotorConfig3D,
+    r0: float,
+    r1: float,
+    a_centre: float,
+    a_half: float,
+    z0: float,
+    z1: float,
+    _angles_cache=None,
+) -> np.ndarray:
+    """Approximate SDF of an annular-sector prism (correct inside, conservative outside).
+
+    ``a_half >= pi`` degenerates to a full annulus with a z window.  The
+    angular distance uses the arc length at the sector's mid radius -- the
+    same approximation the hub-spoke webs already use.
+    """
+    if _angles_cache is not None:
+        _X, _Y, Z, r, theta = _angles_cache
+    else:
+        _X, _Y, Z, r, theta = _angles_of(cfg)
+    r_mid = 0.5 * (r0 + r1)
+    d_r = np.maximum(r - r1, r0 - r)
+    if a_half >= np.pi:
+        band = np.full_like(r, -1.0)
+    else:
+        d_ang = np.mod(theta - a_centre + np.pi, 2.0 * np.pi) - np.pi
+        band = np.abs(d_ang) - a_half
+    cz = 0.5 * (z0 + z1)
+    d_z = np.abs(Z - cz) - 0.5 * (z1 - z0)
+    sdf = np.maximum(np.maximum(d_r, band * r_mid), d_z)
+    return sdf.astype(np.float32)
+
+
+def _printed_frame_sdf(
+    cfg: MotorConfig3D, margin: float = 0.0,
+    netlist=None, cache=None,
+) -> np.ndarray:
+    """Union SDF of the 12 copper frames around the teeth.
+
+    Each frame is a "picture frame" in the (theta, z) plane, extruded over
+    the winding radial band: the outer sector spans the full coil pitch up
+    to the end bands, the window (tooth + cladding, stack z-range) is
+    subtracted -- so copper wraps each tooth flanks + bridges over both
+    tooth ends, exactly the printed concentrated-coil topology.  ``margin``
+    dilates the frame (insulator pocket lining).
+    """
+    from organic_motor.construct.winding_netlist import (
+        PRINTED_CLAD_HALF,
+        PRINTED_FRAME_HALF,
+        printed_netlist,
+    )
+
+    if netlist is None:
+        netlist = printed_netlist(cfg)
+    angles = cache or _angles_of(cfg)
+    _X, _Y, Z, r, theta = angles
+    cz = cfg.center[2]
+    zh = cfg.stator_half_length
+    zc = netlist.coil_zc(cfg)
+    r_wi = cfg.R_winding_inner
+    r_wo = cfg.R_winding_outer - 0.0005  # air slot-back to the yoke
+    pitch = 2.0 * np.pi / netlist.n_slots
+
+    copper = np.full(cfg.shape, 1e9, dtype=np.float32)
+    for n in range(netlist.n_slots):
+        theta_n = n * pitch
+        outer = _sector_sdf(cfg, r_wi, r_wo, theta_n, PRINTED_FRAME_HALF,
+                            cz - zc, cz + zc, _angles_cache=angles)
+        window = _sector_sdf(cfg, r_wi, r_wo, theta_n, PRINTED_CLAD_HALF,
+                             cz - zh, cz + zh, _angles_cache=angles)
+        frame = np.maximum(outer, -window)
+        copper = np.minimum(copper, frame)
+    return (copper - margin).astype(np.float32)
+
+
+def _segment_capsule_sdf(cfg: MotorConfig3D, p1, p2, radius: float,
+                         cache=None) -> np.ndarray:
+    """SDF of a capsule (capped cylinder) from ``p1`` to ``p2``."""
+    _X, Y, Z, _r, _t = cache or _angles_of(cfg)
+    X = _X
+    p1 = np.asarray(p1, dtype=np.float64)
+    p2 = np.asarray(p2, dtype=np.float64)
+    d = p2 - p1
+    L2 = float(d @ d)
+    t = np.clip(((X - p1[0]) * d[0] + (Y - p1[1]) * d[1] + (Z - p1[2]) * d[2]) / L2, 0.0, 1.0)
+    px = p1[0] + t * d[0]
+    py = p1[1] + t * d[1]
+    pz = p1[2] + t * d[2]
+    dist = np.sqrt((X - px) ** 2 + (Y - py) ** 2 + (Z - pz) ** 2)
+    return (dist - radius).astype(np.float32)
+
+
+@dataclass
+class PrintedStatorCore:
+    """Iron yoke ring plus 12 tooth wedges of the printed stator.
+
+    Replaces the field-driven yoke: the toothed core is the multi-material
+    print's magnetic ``bone`` -- yoke annulus behind the winding band, one
+    wedge per tooth inside it, grown with 0.2mm overlap into the yoke so
+    the iron is one connected body by construction.
+    """
+
+    cfg: MotorConfig3D
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import PRINTED_TOOTH_HALF, printed_netlist
+
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        angles = _angles_of(cfg)
+        cz = cfg.center[2]
+        zh = cfg.stator_half_length
+        pitch = 2.0 * np.pi / netlist.n_slots
+
+        yoke = _sector_sdf(cfg, cfg.R_winding_outer, cfg.R_design,
+                           0.0, 2.0 * np.pi, cz - zh, cz + zh, _angles_cache=angles)
+        core = yoke
+        for n in range(netlist.n_slots):
+            tooth = _sector_sdf(cfg, cfg.R_stator_inner, cfg.R_winding_outer + 0.0002,
+                                n * pitch, PRINTED_TOOTH_HALF, cz - zh, cz + zh,
+                                _angles_cache=angles)
+            core = np.minimum(core, tooth)
+        mf.add(SDFVoxelField(sdf=core, spacing=cfg.spacing, origin=cfg.origin),
+               "iron", priority=True)
+        return mf
+
+
+@dataclass
+class PrintedStatorWinding:
+    """Twelve hollow printed coil loops, one around every tooth.
+
+    The topology change that makes the machine a PRINTED stator: each coil
+    is a single continuous copper "picture frame" around its tooth -- two
+    side bands in the half-slots (all coil sides at the SAME radii, so the
+    three phases are geometrically identical and the radial-layer torque
+    asymmetry of the distributed winding dies) plus bridges over both tooth
+    ends that are the real, physical end turns.  Phase insulation is by
+    construction: adjacent frames never touch (tooth + cladding inside,
+    slot-centre separator/wall outside).
+
+    Every copper voxel is tagged with its phase exactly (analytic per-coil
+    frame SDFs), and the netlist in metadata is the single source of truth
+    for the solver's impressed source AND the phase-connectivity audit.
+    """
+
+    cfg: MotorConfig3D
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_CLAD_HALF,
+            PRINTED_FRAME_HALF,
+            printed_netlist,
+        )
+
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        angles = _angles_of(cfg)
+        _X, _Y, Z, r, theta = angles
+        cz = cfg.center[2]
+        zh = cfg.stator_half_length
+        zc = netlist.coil_zc(cfg)
+        r_wi = cfg.R_winding_inner
+        r_wo = cfg.R_winding_outer - 0.0005
+        pitch = 2.0 * np.pi / netlist.n_slots
+
+        copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+        phase_sdf = np.full((3,) + cfg.shape, 1e9, dtype=np.float32)
+        table = {tooth: ph for tooth, ph, _pol in netlist.coil_table()}
+
+        for n in range(netlist.n_slots):
+            outer = _sector_sdf(cfg, r_wi, r_wo, n * pitch, PRINTED_FRAME_HALF,
+                                cz - zc, cz + zc, _angles_cache=angles)
+            window = _sector_sdf(cfg, r_wi, r_wo, n * pitch, PRINTED_CLAD_HALF,
+                                 cz - zh, cz + zh, _angles_cache=angles)
+            frame = np.maximum(outer, -window).astype(np.float32)
+            copper_sdf = np.minimum(copper_sdf, frame)
+            phase_sdf[table[n]] = np.minimum(phase_sdf[table[n]], frame)
+
+        phase_owner = np.argmin(phase_sdf, axis=0).astype(np.int8)
+        phase_owner[copper_sdf >= 0.0] = -1
+
+        mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin),
+               "copper", priority=True)
+        mf.metadata["winding_netlist"] = netlist
+        mf.metadata["winding_phase_owner"] = phase_owner
+        mf.metadata["winding_phase_sdf"] = phase_sdf
+        mf.metadata["winding_style"] = "printed"
+        return mf
+
+
+@dataclass
+class WindingInsulation:
+    """Explicit dielectric kit: no copper-iron coplanar contact, anywhere.
+
+    Four printed insulator features (the ceramic/dielectric material of the
+    multi-material print):
+      1. tooth-flank cladding -- the coil sides face the tooth across a
+         0.6mm insulator shell, never bare iron;
+      2. tooth end caps -- the copper bridges rest on insulator caps, so
+         the end turns never touch the tooth iron;
+      3. slot-centre separators -- phase-to-phase barrier between adjacent
+         frames, continuous into the exoskeleton wall plane;
+      4. the coil pocket liner -- a 0.8mm sock around every frame where it
+         sits inside the exoskeleton shell, i.e. copper-iron separation on
+         the load path too.
+    """
+
+    cfg: MotorConfig3D
+    liner_margin: float = 0.0008
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_CLAD_HALF,
+            PRINTED_FRAME_HALF,
+            PRINTED_TOOTH_HALF,
+            printed_netlist,
+        )
+
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        angles = _angles_of(cfg)
+        cz = cfg.center[2]
+        zh = cfg.stator_half_length
+        zc = netlist.coil_zc(cfg)
+        pitch = 2.0 * np.pi / netlist.n_slots
+
+        insulator = np.full(cfg.shape, 1e9, dtype=np.float32)
+
+        for n in range(netlist.n_slots):
+            theta_n = n * pitch
+            # (1) tooth-flank cladding: shell between tooth and cladding angles
+            clad_outer = _sector_sdf(cfg, cfg.R_stator_inner, cfg.R_winding_outer,
+                                     theta_n, PRINTED_CLAD_HALF, cz - zh, cz + zh,
+                                     _angles_cache=angles)
+            clad_inner = _sector_sdf(cfg, cfg.R_stator_inner + 0.0002, cfg.R_winding_outer,
+                                     theta_n, PRINTED_TOOTH_HALF, cz - zh + 0.001, cz + zh - 0.001,
+                                     _angles_cache=angles)
+            insulator = np.minimum(insulator, np.maximum(clad_outer, -clad_inner))
+            # (2) tooth end caps (overlap the tooth 0.1mm so the cap is anchored)
+            for sign in (+1, -1):
+                cap = _sector_sdf(cfg, cfg.R_stator_inner, cfg.R_winding_outer,
+                                  theta_n, PRINTED_TOOTH_HALF,
+                                  cz + sign * zh - 0.0001, cz + sign * (zh + 0.0006),
+                                  _angles_cache=angles)
+                insulator = np.minimum(insulator, cap)
+            # (3) slot-centre separator (stops at the exoskeleton wall bottom)
+            sep = _sector_sdf(cfg, cfg.R_stator_inner, cfg.R_winding_outer,
+                              theta_n + 0.5 * pitch, np.deg2rad(1.1),
+                              cz - zc - self.liner_margin, cz + 0.0305,
+                              _angles_cache=angles)
+            insulator = np.minimum(insulator, sep)
+
+        # (4) pocket liner: the shell pocket wall around every frame
+        frame = _printed_frame_sdf(cfg, netlist=netlist, cache=angles)
+        liner = np.maximum(frame - self.liner_margin, -frame)
+        insulator = np.minimum(insulator, liner)
+
+        mf.add(SDFVoxelField(sdf=insulator.astype(np.float32),
+                             spacing=cfg.spacing, origin=cfg.origin),
+               "insulator", priority=True)
+        return mf
+
+
+@dataclass
+class StatorExoskeleton:
+    """Structural exoskeleton grown around the 12 electromagnetic cells.
+
+    Replaces the cylindrical barrel housing + flat spoked end caps (both
+    forbidden forms): the load path is
+
+        central bearing crown (hub ring + 12 thin radial walls descending
+        to the yoke between the coil bridges)
+        -> toothed core
+        -> solid base collar that carries the winding pockets
+        -> bottom plate with the coolant ports.
+
+    Between the walls the machine keeps LARGE negative space (petal
+    windows): the coil bridges are directly visible from above, exactly
+    like the printed reference stators.  The bearing race itself stays a
+    separate ring with an assembly gap to the crown (a pressed fit, not a
+    weld -- the rotor must stay electrically and mechanically isolated
+    from the stator structure).
+    """
+
+    cfg: MotorConfig3D
+    hub_inner: float = 0.0155
+    hub_outer: float = 0.020
+    wall_half_angle: float = np.deg2rad(0.6)
+    base_z0: float = -0.0415
+    base_z1: float = -0.031
+    plate_z0: float = -0.0435
+    plate_z1: float = -0.0412
+    pocket_margin: float = 0.0008
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import printed_netlist
+
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        angles = _angles_of(cfg)
+        cz = cfg.center[2]
+        pitch = 2.0 * np.pi / netlist.n_slots
+
+        parts = []
+        # bearing crown hub ring
+        parts.append(_sector_sdf(cfg, self.hub_inner, self.hub_outer,
+                                 0.0, 2.0 * np.pi, cz + 0.033, cz + 0.037,
+                                 _angles_cache=angles))
+        # 12 radial walls at slot centres: from the hub down/out to the yoke
+        for n in range(netlist.n_slots):
+            parts.append(_sector_sdf(cfg, self.hub_inner, cfg.R_design,
+                                     (n + 0.5) * pitch, self.wall_half_angle,
+                                     cz + 0.0305, cz + 0.037,
+                                     _angles_cache=angles))
+        # solid base collar around the winding pockets
+        frame = _printed_frame_sdf(cfg, margin=self.pocket_margin,
+                                   netlist=netlist, cache=angles)
+        shell = _sector_sdf(cfg, cfg.R_stator_inner, cfg.R_design,
+                            0.0, 2.0 * np.pi, cz + self.base_z0, cz + self.base_z1,
+                            _angles_cache=angles)
+        parts.append(np.maximum(shell, -frame))
+        # bottom plate (ports pierce it later as coolant)
+        parts.append(_sector_sdf(cfg, cfg.R_stator_inner, cfg.R_design,
+                                 0.0, 2.0 * np.pi, cz + self.plate_z0, cz + self.plate_z1,
+                                 _angles_cache=angles))
+
+        exo = parts[0]
+        for p in parts[1:]:
+            exo = np.minimum(exo, p)
+        mf.add(SDFVoxelField(sdf=exo.astype(np.float32),
+                             spacing=cfg.spacing, origin=cfg.origin),
+               "iron", priority=True)
+        return mf
+
+
+@dataclass
+class CoilCoolingNetwork:
+    """Coolant INSIDE the copper: per-coil channel loops + base manifolds.
+
+    The cooling topology the printed stator exists for: every coil frame
+    carries an internal channel (elliptical tube ~1.5 x 5 mm following the
+    frame loop: up one side, over the bridge, down the other side, under
+    the bottom bridge), fed from a supply ring and drained into a return
+    ring embedded in the exoskeleton base collar, with two ports through
+    the bottom plate.  The coolant is a dedicated material so the network
+    is auditable: one connected network, two openings, no trapped voids --
+    and the channel walls are the heat-transfer surface directly at the
+    Joule heat source.
+    """
+
+    cfg: MotorConfig3D
+    channel_tangential: float = 0.00075
+    channel_radial: float = 0.0025
+    corner_radius: float = 0.002
+    ring_supply_r: float = 0.0335
+    ring_return_r: float = 0.0400
+    ring_z: float = -0.0385
+    ring_radius: float = 0.0013
+    port_radius: float = 0.0010
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_CLAD_HALF,
+            PRINTED_FRAME_HALF,
+            printed_netlist,
+        )
+
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        _X, _Y, Z, r, theta = angles = _angles_of(cfg)
+        cz = cfg.center[2]
+        zh = cfg.stator_half_length
+        zc = netlist.coil_zc(cfg)
+        r_c = 0.5 * (cfg.R_winding_inner + cfg.R_winding_outer - 0.0005)
+        u_c = 0.5 * (PRINTED_CLAD_HALF + PRINTED_FRAME_HALF)
+        A = u_c * r_c                       # loop half-width (arc length)
+        B = zc - 0.0012                     # loop half-height
+        zm = 0.5 * (zh + zc)
+
+        coolant = np.full(cfg.shape, 1e9, dtype=np.float32)
+        pitch = 2.0 * np.pi / netlist.n_slots
+        for n in range(netlist.n_slots):
+            d_ang = np.mod(theta - n * pitch + np.pi, 2.0 * np.pi) - np.pi
+            a = d_ang * r_c
+            qa = np.abs(a) - (A - self.corner_radius)
+            qb = np.abs(Z - cz) - (B - self.corner_radius)
+            qa_c = np.maximum(qa, 0.0)
+            qb_c = np.maximum(qb, 0.0)
+            d2 = (np.sqrt(qa_c ** 2 + qb_c ** 2)
+                  + np.minimum(np.maximum(qa, qb), 0.0) - self.corner_radius)
+            dr = r - r_c
+            ell = np.sqrt((d2 / self.channel_tangential) ** 2
+                          + (dr / self.channel_radial) ** 2) - 1.0
+            coolant = np.minimum(coolant, ell * self.channel_tangential)
+
+            # supply stub (go side) and return stub (return side)
+            for side, r_ring in ((-1.0, self.ring_supply_r), (+1.0, self.ring_return_r)):
+                ang = n * pitch + side * u_c
+                p1 = (r_c * np.cos(ang), r_c * np.sin(ang), cz - zm)
+                p2 = (r_ring * np.cos(ang), r_ring * np.sin(ang), cz + self.ring_z)
+                stub = _segment_capsule_sdf(cfg, p1, p2, self.channel_tangential,
+                                            cache=angles)
+                coolant = np.minimum(coolant, stub)
+
+        # supply and return manifold rings in the base collar
+        for r_ring in (self.ring_supply_r, self.ring_return_r):
+            ring = np.sqrt((r - r_ring) ** 2 + (Z - (cz + self.ring_z)) ** 2) - self.ring_radius
+            coolant = np.minimum(coolant, ring.astype(np.float32))
+
+        # two ports through the bottom plate (open to the outside air)
+        for ang_deg, r_port in ((15.0, self.ring_supply_r), (195.0, self.ring_return_r)):
+            ang = np.deg2rad(ang_deg)
+            p1 = (r_port * np.cos(ang), r_port * np.sin(ang), cz + self.ring_z)
+            p2 = (r_port * np.cos(ang), r_port * np.sin(ang), cz + self.plate_port_z())
+            port = _segment_capsule_sdf(cfg, p1, p2, self.port_radius, cache=angles)
+            coolant = np.minimum(coolant, port)
+
+        mf.add(SDFVoxelField(sdf=coolant.astype(np.float32),
+                             spacing=cfg.spacing, origin=cfg.origin),
+               "coolant", priority=True)
+        return mf
+
+    def plate_port_z(self) -> float:
+        return self.ring_z - 0.006
+
+
 @dataclass
 class RotorSleeve:
     """Thin retaining sleeve over surface magnets.
@@ -741,19 +1172,21 @@ class StatorSegmentation:
 
 @dataclass
 class ShaftAndBearings:
-    """Central shaft, bearing races and end caps.
+    """Central shaft, rotor hub spokes and the two bearing races.
 
-    Completes the mechanical assembly so the motor reads as a machine, not
-    an isolated electromagnetic core.  The shaft extends beyond the stator
-    for coupling; two bearing races sit at the ends; thin end caps close
-    the housing and provide bearing seats.
+    The end caps are GONE: their flat spoked discs were the old housing
+    mother's closing plates, replaced by the exoskeleton's bearing crown.
+    The bearing races stay separate rings with a deliberate assembly gap
+    to the crown hub (a press fit at assembly time -- never a weld, or the
+    rotor would be structurally shorted to the stator and the
+    connectivity audit would rightly flag a cross-bridge).
     """
 
     cfg: MotorConfig3D
     shaft_extension: float = 0.012
     bearing_width: float = 0.004
     bearing_radius: float = 0.0
-    end_cap_thickness: float = 0.003
+    end_cap_thickness: float = 0.0  # kept for API compat; caps removed (P4)
     n_cap_spokes: int = 6
     spoke_fraction: float = 0.35
     n_hub_spokes: int = 6
@@ -767,7 +1200,6 @@ class ShaftAndBearings:
         hz = cfg.stator_half_length
         r_shaft = cfg.R_shaft
         r_bearing = self.bearing_radius or (r_shaft + 0.006)
-        r_cap = cfg.R_design + 0.006
 
         X, Y, Z, r, theta = _angles_of(cfg)
         shaft_half = hz + self.shaft_extension
@@ -782,7 +1214,6 @@ class ShaftAndBearings:
         parts = [shaft_sdf]
         hub_z = cfg.rotor_half_length - 0.002
         spoke_pitch = 2.0 * np.pi / self.n_hub_spokes
-        spoke_half_arc = 0.5 * self.hub_spoke_width / max(r_rotor_bore, 1e-6)
         for sign in (+1, -1):
             z_h = cz + sign * (hub_z - 0.5 * self.hub_spoke_width)
             axial_h = np.abs(Z - z_h) - 0.5 * self.hub_spoke_width
@@ -797,35 +1228,15 @@ class ShaftAndBearings:
             parts.append(web.astype(np.float32))
 
         bearing_half = self.bearing_width * 0.5
-        cap_half = self.end_cap_thickness * 0.5
-        spoke_pitch_cap = 2.0 * np.pi / self.n_cap_spokes
-        window_span = spoke_pitch_cap * (1.0 - self.spoke_fraction)
-
         for sign in (+1, -1):
             # Bearing sits fully beyond the rotor end so it never bridges
-            # shaft and rotor iron (rotor ends at rotor_half_length).
+            # shaft and rotor iron (rotor ends at rotor_half_length), and
+            # keeps its assembly gap to the crown hub (press fit, no weld).
             z_b = cz + sign * (cfg.rotor_half_length + cfg.axial_airgap + self.bearing_width + bearing_half)
             axial_b = np.abs(Z - z_b) - bearing_half
             bearing_outer = np.maximum(r - r_bearing, axial_b)
-            bearing_hole = np.maximum(r - r_shaft, axial_b)
+            bearing_hole = np.maximum(r - (r_shaft - 0.0001), axial_b)
             parts.append(np.maximum(bearing_outer, -bearing_hole))
-
-            z_c = cz + sign * (cfg.rotor_half_length + cfg.axial_airgap + self.bearing_width
-                               + self.end_cap_thickness + cap_half + 0.004)
-            axial_c = np.abs(Z - z_c) - cap_half
-            cap_outer = np.maximum(r - r_cap, axial_c)
-            cap_hole = np.maximum(r - (r_bearing + 0.001), axial_c)
-            cap_sdf = np.maximum(cap_outer, -cap_hole)
-
-            for i in range(self.n_cap_spokes):
-                window_centre = i * spoke_pitch_cap + spoke_pitch_cap * 0.5
-                d_ang = np.mod(theta - window_centre + np.pi, 2 * np.pi) - np.pi
-                w_axial = np.abs(Z - z_c) - (cap_half + 0.001)
-                w_radial = np.maximum(r - r_cap, r_bearing - r)
-                w_angular = np.abs(d_ang) - window_span * 0.5
-                window_sdf = np.maximum(w_radial, np.maximum(w_angular, w_axial))
-                cap_sdf = np.maximum(cap_sdf, -window_sdf)
-            parts.append(cap_sdf)
 
         combined = parts[0]
         for p in parts[1:]:
@@ -1028,16 +1439,16 @@ def baseline_motor(cfg: MotorConfig3D | None = None) -> Motor:
 def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
     """A motor built entirely from field-driven computational objects.
 
-    Every solid's local geometry reads a reduced-physics field pointwise:
-    magnet thickness follows the air-gap |B| demand with a barrel axial
-    profile and a helical skew that cancels cogging, the stator yoke
-    thickens where flux is high, the cooling channels are helical voids
-    with walls that thicken where the winding runs hot, a rotor sleeve
-    contains the magnets, and segmentation slits suppress eddy currents.
-    The winding is a three-phase network with phase-separated radial
-    layers and multi-strand slot bundles.  Hub spokes anchor the rotor
-    to the shaft; the structural-continuity pass deletes any floating
-    metal as the final invariant.
+    P4 topology: the printed multi-material stator.  Every tooth is one
+    electromagnetic/cooling CELL -- iron wedge, hollow printed coil with an
+    internal coolant channel, dielectric kit (cladding, caps, separators,
+    pocket liner) -- and the structure is an exoskeleton grown around the
+    cells: bearing crown with 12 thin radial walls, solid base collar
+    carrying the winding pockets, bottom plate with the coolant ports.
+    The forbidden forms (outer spiral barrel, cylindrical housing, flat
+    spoked end caps, distributed lap winding) are gone; cooling lives
+    INSIDE the copper now.  The rotor keeps the P2-validated radius budget
+    (4mm magnets, 3mm gap, non-magnetic sleeve).
     """
     cfg = cfg or MotorConfig3D()
     return Motor(cfg, components=[
@@ -1045,11 +1456,11 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
         RotorCore(cfg),
         FieldDrivenMagnets(cfg),
         RotorSleeve(cfg),
-        FieldDrivenStatorYoke(cfg),
-        StatorSegmentation(cfg),
-        Winding3D(cfg),
-        MotorHousing(cfg),
-        HelicalCoolingChannels(cfg),
+        PrintedStatorCore(cfg),
+        StatorExoskeleton(cfg),
+        PrintedStatorWinding(cfg),
+        WindingInsulation(cfg),
+        CoilCoolingNetwork(cfg),
         FunctionalVoids(cfg),
         StructuralContinuity(cfg),
     ])

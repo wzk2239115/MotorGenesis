@@ -16,7 +16,13 @@ import numpy as np
 import pytest
 
 from organic_motor.config3d import MotorConfig3D
-from organic_motor.construct.objects import field_driven_motor, Winding3D
+from organic_motor.construct.objects import (
+    PrintedStatorCore,
+    PrintedStatorWinding,
+    Winding3D,
+    field_driven_motor,
+)
+from organic_motor.construct.winding_netlist import printed_netlist
 from organic_motor.construct.geometry_metrics import compute_geometry_metrics
 from organic_motor.construct.material import MaterialField
 from organic_motor.construct.phase_verify import verify_phase_connectivity
@@ -26,6 +32,7 @@ def _small_cfg(**overrides):
     defaults = dict(
         shape=(48, 48, 30),
         excitation_mode="terminal",
+        pole_pairs=2,  # Winding3D's design pole count (12s4p span-3 lap)
         filt_radius=0.0,
         projection_beta=0.0,
         mechanical_angles=3,
@@ -122,6 +129,58 @@ class TestWindingTopology:
         wr = 0.35 * (cfg.R_winding_outer - cfg.R_winding_inner) / w.n_layers
         spacing = (cfg.R_winding_outer - cfg.R_winding_inner) / w.n_layers
         assert 2 * wr < spacing, "wire diameter must fit inside its layer band"
+
+
+class TestPrintedWinding:
+    """The 12s10p printed concentrated winding: one coil loop per tooth."""
+
+    @pytest.fixture(scope="class")
+    def printed(self):
+        # The display grid (~0.63mm cells): the 1.5mm phase gap and the
+        # 0.6mm cladding resolve here; at the physics grid they are
+        # sub-cell and the mesh-convergence verdict reports that.
+        cfg = _small_cfg(shape=(224, 224, 132), excitation_mode="impressed")
+        mf = MaterialField(shape=cfg.shape, spacing=cfg.spacing, origin=cfg.origin)
+        PrintedStatorCore(cfg).build(mf)
+        PrintedStatorWinding(cfg).build(mf)
+        return cfg, mf
+
+    def test_netlist_table_balanced(self):
+        netlist = printed_netlist(MotorConfig3D())
+        table = netlist.coil_table()
+        assert len(table) == 12
+        counts = [sum(1 for _t, ph, _s in table if ph == p) for p in range(3)]
+        assert counts == [4, 4, 4]
+        # The MMF fundamental of every phase has the same magnitude 2+sqrt(3)
+        # (= 4 * 0.933): the winding-factor-0.933 machine is per-phase
+        # symmetric by construction.
+        for p in range(3):
+            mmf = sum(
+                s * np.cos(5 * t * np.pi / 6 - p * 2 * np.pi / 3)
+                for t, ph, s in table if ph == p
+            )
+            assert abs(abs(mmf) - (2.0 + np.sqrt(3.0))) < 1e-9, (p, mmf)
+
+    def test_expected_four_loops_per_phase(self):
+        netlist = printed_netlist(MotorConfig3D())
+        assert netlist.expected_phase_components().tolist() == [4, 4, 4]
+
+    def test_belts_balanced_columns(self, printed):
+        cfg, mf = printed
+        belts = mf.metadata["winding_netlist"].phase_belts_3d(cfg)
+        mid = belts.shape[2] // 2
+        for p in range(3):
+            b = belts[p][:, :, mid]
+            assert int((b > 0).sum()) == int((b < 0).sum()) > 0
+            assert np.isclose(b[b != 0].sum(), 0.0, atol=len(b[b != 0]))
+
+    def test_four_components_per_phase_no_short(self, printed):
+        cfg, mf = printed
+        report = verify_phase_connectivity(mf, cfg)
+        assert [report["phase_a_components"], report["phase_b_components"],
+                report["phase_c_components"]] == [4, 4, 4]
+        assert report["phase_cross_short"] is False
+        assert report["passed"] is True
 
 
 class TestGeometryGates:

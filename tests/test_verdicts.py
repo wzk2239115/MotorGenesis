@@ -20,6 +20,7 @@ def _cfg(**overrides):
     defaults = dict(
         shape=(6, 6, 6),
         excitation_mode="impressed",
+        pole_pairs=2,  # legacy-winding design pole count
         filt_radius=0.0,
         projection_beta=0.0,
         mechanical_angles=3,

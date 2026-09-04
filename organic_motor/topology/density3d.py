@@ -22,6 +22,15 @@ class TopologyFields3D:
     rho_copper: jnp.ndarray
     rho_pm: jnp.ndarray
     rotor_ownership: jnp.ndarray
+    # Printed dielectric: electromagnetically it IS air (it rides inside
+    # rho_air for the Maxwell/electric solves via the realize() complement);
+    # carried separately so the thermal blend can give it a real (low, but
+    # non-zero) conductivity instead of floating every coil thermally.
+    rho_insulator: jnp.ndarray | None = None
+    # Printed coolant: a pure void thermally dead-ends the heat path; the
+    # thermal solve turns its density into the internal convection sink
+    # (h * S_v * rho_coolant), the reduced-order conjugate heat transfer.
+    rho_coolant: jnp.ndarray | None = None
 
     @property
     def phases(self) -> jnp.ndarray:

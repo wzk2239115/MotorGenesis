@@ -49,8 +49,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--inertia", type=float, default=2.0e-4)
     ap.add_argument("--jpeak", type=float, default=5.0e6,
                     help="impressed current density peak [A/m^2]")
-    ap.add_argument("--comm", type=float, default=3.1415927,
-                    help="commutation offset [rad]; mean torque ~ cos(comm), "
+    ap.add_argument("--comm", type=float, default=-1.3089961,
+                    help="commutation offset [rad]; -5*pi/12 = -75 deg is the "
+                         "q-axis drive of the 12s10p printed winding (measured "
+                         "T1 phase fit + transient sweep: +1490 rpm forward, "
+                         "zero reversal; mean torque ~ cos(comm - delta), "
                          "0/180 deg select the sign for this convention")
     ap.add_argument("--maxwell-iters", type=int, default=300,
                     help="Maxwell CG iterations (torque converges ~300)")
@@ -77,10 +80,14 @@ def _parse_shape(text: str) -> tuple[int, int, int]:
 
 
 def _fine_grid_amplitudes(cfg, settings, map_angles, fine_shape):
-    """T0 rms + phase-A T1 amplitude at a REFINED grid (convergence ladder).
+    """T0 rms + ALL-PHASE T1 amplitudes at a REFINED grid (convergence ladder).
 
     The coarse side of the ladder is reused from the main run's maps, so
-    only the fine-grid solves are extra.
+    only the fine-grid solves are extra.  All three phases are solved at
+    the fine grid and the ladder gates on the PHASE-MEAN amplitude: the
+    per-phase T1 carries inter-phase grid noise (measured 96->112: A -8%,
+    C +5.5% while the mean moved -3.7%), and the machine's drive torque is
+    the phase-mean quantity.
     """
     from dataclasses import replace
 
@@ -111,13 +118,15 @@ def _fine_grid_amplitudes(cfg, settings, map_angles, fine_shape):
         g, None, None, mag_g, map_angles, settings,
         phase_solver=phase_solver, base_belts=belts,
         include_mechanics=False, keep_volumes=False,
-        phases=(0,),  # phase-A T1 + T0 suffice for the convergence gate
+        phases=(0, 1, 2),
     )
     t0 = np.asarray(maps["torque_cogging"], dtype=float)
     t1 = np.asarray(maps["torques_ph"], dtype=float)
+    amps = np.max(np.abs(t1), axis=1)
     return {
         "t0_rms": float(np.sqrt(np.mean(t0 ** 2))),
-        "t1_phase0_amp": float(np.max(np.abs(t1[0]))),
+        "t1_phase_amps": [float(a) for a in amps],
+        "t1_mean_amp": float(amps.mean()),
     }
 
 
@@ -190,8 +199,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     # alongside -- the discrepancy feeds the mesh-convergence verdict.
     from dataclasses import replace
 
-    display_cfg = replace(cfg, shape=(160, 160, 96))
-    print(f"[startup] display build {display_cfg.shape} for topology verdicts...")
+    display_cfg = replace(cfg, shape=(224, 224, 132))
+    print(f"[startup] display build {display_cfg.shape} (~0.63mm cells, construction decoupled from the physics grid) for topology verdicts...")
     display_mf = field_driven_motor(display_cfg).build()
 
     print(f"[startup] running {args.angles} initial angles, "
@@ -222,14 +231,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         conv_settings = Powered3DSettings()
         period = 2.0 * np.pi / cfg.pole_pairs
         map_angles = np.arange(args.map_angles) * period / args.map_angles
-        # Adjacent ladder step (refinement halvens the cell size by ~1.3x);
-        # the full 96/112/128/160 probe after the non-magnetic sleeve fix:
-        # T1 = 0.096/0.098/0.094/0.100 -- bounded oscillation, no drift.
+        # Adjacent ladder step (refinement halves the cell size by ~1.3x);
+        # the ladder gates on the PHASE-MEAN T1 (per-phase values carry
+        # inter-phase grid noise: A -8% / C +5.5% while the mean -3.7%).
         fine_shape = (112, 112, 66)
         print(f"[startup] torque-convergence refinement {fine_shape} "
-              f"(phase-A + zero-I solves)...")
+              f"(all-phase T1 + zero-I solves)...")
         fine = _fine_grid_amplitudes(cfg, conv_settings, map_angles, fine_shape)
         td = result.torque_decomposition
+        coarse_mean = float(np.mean(td["t1_amplitudes_Nm"]))
         conv = {
             "physics_shape": list(cfg.shape),
             "fine_shape": list(fine_shape),
@@ -237,11 +247,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             "t0_rms_fine_Nm": fine["t0_rms"],
             "t0_rms_change_pct": 100.0 * (fine["t0_rms"] - td["t0_rms_Nm"])
             / max(td["t0_rms_Nm"], 1e-9),
-            "t1_amplitude_physics_Nm": td["t1_amplitudes_Nm"][0],
-            "t1_amplitude_fine_Nm": fine["t1_phase0_amp"],
+            "t1_amplitude_physics_Nm": coarse_mean,
+            "t1_phase_amps_physics_Nm": [float(a) for a in td["t1_amplitudes_Nm"]],
+            "t1_phase_amps_fine_Nm": fine["t1_phase_amps"],
+            "t1_amplitude_fine_Nm": fine["t1_mean_amp"],
             "t1_amplitude_change_pct": 100.0
-            * (fine["t1_phase0_amp"] - td["t1_amplitudes_Nm"][0])
-            / max(td["t1_amplitudes_Nm"][0], 1e-9),
+            * (fine["t1_mean_amp"] - coarse_mean)
+            / max(coarse_mean, 1e-9),
         }
         print(f"  T1 amplitude change: {conv['t1_amplitude_change_pct']:+.1f}%")
         print(f"  T0 rms change      : {conv['t0_rms_change_pct']:+.1f}%")

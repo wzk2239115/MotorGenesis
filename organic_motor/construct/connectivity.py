@@ -49,17 +49,18 @@ def _grids(cfg: MotorConfig3D):
 
 
 def anchor_masks(cfg: MotorConfig3D):
-    """Structural anchors: the shaft (rotor side) and the housing RING band.
+    """Structural anchors: the shaft (rotor side) and the yoke OUTER band.
 
-    The housing anchor is the actual blade/ring annulus (R_design+5 ..
-    +7.8 mm -- MotorHousing's 55..58 mm shell minus the outer aliasing
-    fringe), NOT "everything beyond R_design": an over-wide anchor lets
-    any detached fleck near the housing count as a load path, which is
+    The stator anchor is the outer 2mm ring of the iron core
+    (R_design-2mm .. R_design+0.5mm): the exoskeleton's base collar, walls
+    and yoke all fuse into that band, and NOTHING exists beyond R_design
+    any more (the old 55-58mm barrel is gone).  An over-wide anchor lets
+    any detached fleck near the outside count as a load path, which is
     exactly the false-anchor failure the audit exists to catch.
     """
     _X, _Y, Z, r = _grids(cfg)
     shaft = r < (cfg.R_shaft + 0.001)
-    housing = (r >= cfg.R_design + 0.005) & (r <= cfg.R_design + 0.0078)
+    housing = (r >= cfg.R_design - 0.002) & (r <= cfg.R_design + 0.0005)
     return shaft, housing
 
 
@@ -201,14 +202,37 @@ def prune_floating_islands(mf: MaterialField, cfg: MotorConfig3D) -> MaterialFie
     return mf
 
 
+def _external_air(cfg: MotorConfig3D, solid: np.ndarray) -> np.ndarray:
+    """Dilated mask of the air that reaches the domain boundary.
+
+    A port/vent "opens to the outside" iff it touches the SAME connected
+    air body the domain boundary is made of -- not merely any interior
+    void.  Used by both the coolant and the powder-escape audits.
+    """
+    from scipy import ndimage as _ndi
+
+    air = ~solid
+    structure = _ndi.generate_binary_structure(3, 1)
+    labels, _ = _ndi.label(air, structure=structure)
+    boundary = np.zeros(cfg.shape, dtype=bool)
+    boundary[0, :, :] = boundary[-1, :, :] = True
+    boundary[:, 0, :] = boundary[:, -1, :] = True
+    boundary[:, :, 0] = boundary[:, :, -1] = True
+    ext_labels = set(labels[boundary].tolist()) - {0} if (air & boundary).any() else set()
+    ext = np.isin(labels, list(ext_labels)) if ext_labels else np.zeros_like(air)
+    return _ndi.binary_dilation(ext, structure=structure, iterations=2)
+
+
 def coolant_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
     """Coolant connectivity on the DEDICATED coolant material.
 
-    The coolant network must run inlet -> outlet: a component qualifies as
-    a through-flow path only if it reaches axially beyond BOTH ends of the
-    stator stack (where the inlet/outlet stubs live).  Components fully
-    enclosed by solid that reach neither end are trapped voids -- powder-
-    removal and pressure-fill failure in manufacture.
+    The printed cooling network (per-coil channels + supply/return rings +
+    two ports) qualifies as through-flow when it has at least TWO distinct
+    openings to the EXTERNAL air (in and out port) -- or, for legacy
+    jacket designs, when one component spans both axial ends of the
+    stator stack.  Components fully enclosed by solid that reach neither
+    are trapped voids: pressure-fill and powder-removal failure in
+    manufacture.
 
     Falls back to the "air" material (with a flag) only when no dedicated
     coolant network exists, e.g. for legacy fields where all voids were
@@ -236,31 +260,168 @@ def coolant_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
     hz = cfg.stator_half_length
     low_end = Z <= (cz - hz + 2.0 * cfg.dz)
     high_end = Z >= (cz + hz - 2.0 * cfg.dz)
-    boundary = np.zeros(cfg.shape, dtype=bool)
-    boundary[0, :, :] = boundary[-1, :, :] = True
-    boundary[:, 0, :] = boundary[:, -1, :] = True
-    boundary[:, :, 0] = boundary[:, :, -1] = True
 
+    solid = np.zeros(cfg.shape, dtype=bool)
+    for name in ("iron", "copper", "pm", "insulator"):
+        field = mf.sdfs.get(name)
+        if field is not None:
+            solid |= field.sdf < 0.0
+    ext_air = _external_air(cfg, solid)
+
+    min_opening_voxels = max(4, int((0.0015 / min(cfg.spacing)) ** 2))
     trapped = 0
     through = 0
-    open_components = 0
+    openings_total = 0
     for i in range(1, n_comp + 1):
         comp = labels == i
-        if (comp & boundary).any():
-            open_components += 1
+        contact = comp & ext_air
+        if contact.any():
+            cl, n_contact = ndimage.label(contact, structure=structure)
+            sizes = ndimage.sum(contact, cl, range(1, n_contact + 1))
+            openings = int((sizes >= min_opening_voxels).sum())
+        else:
+            openings = 0
+        openings_total += openings
         has_low = bool((comp & low_end).any())
         has_high = bool((comp & high_end).any())
-        if has_low and has_high:
+        if openings >= 2 or (has_low and has_high):
             through += 1
-        elif not (has_low or has_high) and comp.sum() >= 100:
+        elif openings == 0 and not (has_low or has_high) and comp.sum() >= 100:
             # ~85 mm^3: print-blocking pockets only
             trapped += 1
     return {
         "trapped_voids": int(trapped),
         "coolant_components": int(n_comp),
-        "coolant_open_components": int(open_components),
+        "coolant_openings": int(openings_total),
         "through_flow_networks": int(through),
         "dedicated_coolant": bool(dedicated),
+    }
+
+
+def _am_solid(mf: MaterialField, cfg: MotorConfig3D) -> np.ndarray:
+    """Solid mask for the additive-manufacture audits (stator print only).
+
+    The rotor assembly (rotor iron, magnets, sleeve, hub spokes, shaft,
+    bearing races -- everything inside the air-gap split radius, at any z)
+    is a SEPARATELY printed / machined part assembled afterwards: its down
+    faces are irrelevant to the stator print and would drown the audit
+    (the magnets alone contribute ~6000 mm^2).
+    """
+    solid = np.zeros(cfg.shape, dtype=bool)
+    for name in ("iron", "copper", "pm", "insulator"):
+        field = mf.sdfs.get(name)
+        if field is not None:
+            solid |= field.sdf < 0.0
+    _X, _Y, Z, r = _grids(cfg)
+    r_split = 0.5 * (getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer) + cfg.R_stator_inner)
+    return solid & (r >= r_split)
+
+
+def powder_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
+    """Powder-escape audit for additive manufacture.
+
+    EVERY void (air + coolant) must connect to the external air: in metal
+    powder-bed printing, an enclosed pocket traps loose powder -- extra
+    mass, contamination, and no way to clean it.  The coil channels and
+    manifolds escape through their ports; the petal windows vent upwards;
+    the slot-back air columns vent through the machine ends.
+    """
+    solid = _am_solid(mf, cfg)
+    void = ~solid
+    if not void.any():
+        return {"trapped_pockets": 0, "escaped_fraction": 1.0}
+    structure = ndimage.generate_binary_structure(3, 1)
+    labels, n_comp = ndimage.label(void, structure=structure)
+    ext_air = _external_air(cfg, solid)
+    min_pocket = max(50, int((0.8 / min(cfg.spacing)) ** 3))
+    trapped = 0
+    trapped_volume = 0
+    total_void = 0
+    for i in range(1, n_comp + 1):
+        comp = labels == i
+        n_vox = int(comp.sum())
+        total_void += n_vox
+        if not (comp & ext_air).any() and n_vox >= min_pocket:
+            trapped += 1
+            trapped_volume += n_vox
+    return {
+        "trapped_pockets": int(trapped),
+        "trapped_void_fraction": trapped_volume / max(total_void, 1),
+        "escaped_fraction": 1.0 - trapped_volume / max(total_void, 1),
+    }
+
+
+def overhang_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
+    """Downward-facing surface audit (print direction +z, stator print).
+
+    Classification of every down-facing face:
+      - PLATE   the first solid layers rest on the build plate (the base
+                collar's bottom IS the print start, not an overhang);
+      - BORE    narrow ceilings whose local inscribed width <= ~5 mm --
+                the coolant channel loops and manifold rings: printable
+                self-supporting bores in metal AM;
+      - WALL    thin-rib bridges: the crown's radial walls and the hub,
+                spanning between supported regions (thin-wall strategy);
+      - SPAN    everything else -- genuine support-less failures.
+
+    The audit reports each class separately; the SPAN fraction gates.
+    """
+    solid = _am_solid(mf, cfg)
+    if not solid.any():
+        return {"down_faces": 0, "unsupported_fraction": 0.0,
+                "unsupported_clusters": 0, "span_fraction": 0.0}
+
+    below = np.zeros_like(solid)
+    below[:, :, 1:] = solid[:, :, :-1]
+    down_faces = solid & ~below
+
+    nb = np.zeros_like(solid)
+    nb[:, :, 1:] = solid[:, :, :-1]
+    lateral = np.zeros_like(solid)
+    lateral[1:, :, :] |= nb[:-1, :, :]   # neighbour -x solid one cell below
+    lateral[:-1, :, :] |= nb[1:, :, :]   # neighbour +x
+    lateral[:, 1:, :] |= nb[:, :-1, :]   # neighbour -y
+    lateral[:, :-1, :] |= nb[:, 1:, :]   # neighbour +y
+    unsupported = down_faces & ~lateral
+
+    # Plate rows: the print's lowest solid layers sit on the build plate.
+    ks = np.where(solid.any(axis=(0, 1)))[0]
+    plate = np.zeros(cfg.shape, dtype=bool)
+    if ks.size:
+        plate[:, :, : ks[0] + 2] = True
+    unsupported = unsupported & ~plate
+
+    structure = ndimage.generate_binary_structure(3, 1)
+    labels, n_clusters = ndimage.label(unsupported, structure=structure)
+    cell_mm2 = (cfg.dx * 1000.0) * (cfg.dz * 1000.0)
+    bore_width = max(3, int(round(0.0025 / min(cfg.dx, cfg.dz))))
+    span_cells = 0
+    bore_cells = 0
+    max_span = 0.0
+    big = 0
+    if n_clusters:
+        sizes = ndimage.sum(unsupported, labels, range(1, n_clusters + 1))
+        edt = ndimage.distance_transform_edt(unsupported, sampling=(cfg.dx, cfg.dy, cfg.dz))
+        for i in range(1, n_clusters + 1):
+            comp = labels == i
+            width = float(edt[comp].max())
+            if width <= 0.0025:
+                bore_cells += int(sizes[i - 1])
+            else:
+                span_cells += int(sizes[i - 1])
+                max_span = max(max_span, float(sizes[i - 1]) * cell_mm2)
+                if sizes[i - 1] * cell_mm2 > 10.0:
+                    big += 1
+    total = max(int(down_faces.sum()), 1)
+    return {
+        "down_faces": int(down_faces.sum()),
+        "plate_supported_fraction": float((down_faces & plate).sum()) / total,
+        "bore_ceiling_fraction": bore_cells / total,
+        "span_fraction": span_cells / total,
+        "unsupported_fraction": (bore_cells + span_cells) / total,
+        "unsupported_clusters": int(n_clusters),
+        "large_span_clusters": big,
+        "max_span_mm2": max_span,
     }
 
 

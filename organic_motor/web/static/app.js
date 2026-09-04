@@ -115,7 +115,9 @@ async function showCheckpoint(run, step, level) {
   status(`加载第 ${step} 步…`, "busy");
   clearModel();
   try {
-    const url = `/api/runs/${encodeURIComponent(run)}/checkpoint/${step}/glb?level=${level}&smoothing=taubin&iterations=5`;
+    const statorView = $("statorViewToggle")?.checked ?? false;
+    const url = `/api/runs/${encodeURIComponent(run)}/checkpoint/${step}/glb`
+      + `?level=${level}&smoothing=taubin&iterations=5&view=${statorView ? "stator" : "full"}`;
     const model = await loadGlb(url);
     currentModel = model;
 
@@ -132,30 +134,32 @@ async function showCheckpoint(run, step, level) {
     controls.update();
 
     // Index material nodes by name for per-material toggling.
+    const matStyle = {
+      iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
+      copper: { color: 0xc87533, metalness: 0.95, roughness: 0.28, env: 1.4 },
+      pm: { color: 0x8a2042, metalness: 0.5, roughness: 0.45, env: 0.8 },
+      coolant: { color: 0x408cde, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.45 },
+      insulator: { color: 0xe8e6da, metalness: 0.05, roughness: 0.6, env: 0.7 },
+    };
     model.traverse((o) => {
       if (o.isMesh) {
         o.castShadow = true;
         o.receiveShadow = true;
         const name = (o.name || o.parent?.name || "").toLowerCase();
-        for (const mat of ["iron", "copper", "pm"]) {
+        for (const mat of Object.keys(matStyle)) {
           if (name.includes(mat)) {
             materialNodes.set(mat, o);
-            if (mat === "iron") {
-              o.material = new THREE.MeshStandardMaterial({
-                color: 0x7a8a9c, metalness: 0.92, roughness: 0.38,
-                envMapIntensity: 1.2,
-              });
-            } else if (mat === "copper") {
-              o.material = new THREE.MeshStandardMaterial({
-                color: 0xc87533, metalness: 0.95, roughness: 0.28,
-                envMapIntensity: 1.4,
-              });
-            } else {
-              o.material = new THREE.MeshStandardMaterial({
-                color: 0x8a2042, metalness: 0.5, roughness: 0.45,
-                envMapIntensity: 0.8,
-              });
+            const st = matStyle[mat];
+            const material = new THREE.MeshStandardMaterial({
+              color: st.color, metalness: st.metalness,
+              roughness: st.roughness, envMapIntensity: st.env,
+            });
+            if (st.opacity !== undefined) {
+              material.transparent = true;
+              material.opacity = st.opacity;
+              material.depthWrite = false;
             }
+            o.material = material;
           }
         }
       }
@@ -179,13 +183,16 @@ const MATERIAL_COLORS = {
   copper: "#d6662b",
   pm: "#cd2d48",
   coolant: "#408cde",
+  insulator: "#e8e6da",
 };
-const materialVisible = { iron: true, copper: true, pm: true, coolant: true };
+// Coolant starts HIDDEN in the solid view (it is fluid inside the coils,
+// shown as a translucent blue flow path when toggled on).
+const materialVisible = { iron: true, copper: true, pm: true, coolant: false, insulator: true };
 
 function syncMaterialToggles() {
   const host = $("materialToggles");
   host.innerHTML = "";
-  for (const mat of ["iron", "copper", "pm", "coolant"]) {
+  for (const mat of ["iron", "copper", "pm", "insulator", "coolant"]) {
     const present = materialNodes.has(mat);
     const row = document.createElement("label");
     row.className = "toggle";
@@ -203,7 +210,10 @@ function syncMaterialToggles() {
   }
 }
 function labelOf(m) {
-  return { iron: "铁 Iron", copper: "铜 Copper", pm: "磁钢 PM", coolant: "冷却 Coolant" }[m] || m;
+  return {
+    iron: "铁 Iron", copper: "铜 Copper", pm: "磁钢 PM",
+    coolant: "冷却 Coolant", insulator: "绝缘 Insulator",
+  }[m] || m;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +469,10 @@ $("liveToggle").addEventListener("change", (e) => {
   state.live = e.target.checked;
   if (state.live && state.currentRun) startLive(state.currentRun);
   else if (state.eventSource) { state.eventSource.close(); state.eventSource = null; status("已停止实时跟随", ""); }
+});
+
+$("statorViewToggle").addEventListener("change", async () => {
+  if (state.stepIndex >= 0) await showCheckpoint(state.currentRun, state.steps[state.stepIndex], state.level);
 });
 
 $("downloadStl").addEventListener("click", () => {

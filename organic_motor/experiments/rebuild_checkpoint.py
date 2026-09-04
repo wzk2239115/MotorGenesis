@@ -29,7 +29,7 @@ def main() -> None:
         n_theta=32, torque_n_z=16, torque_n_r=16,
     )
     from dataclasses import replace
-    dcfg = replace(cfg, shape=(160, 160, 96))
+    dcfg = replace(cfg, shape=(224, 224, 132))
 
     print("[rebuild] physics build + score (56^3, impressed)...")
     t0 = time.perf_counter()
@@ -43,7 +43,7 @@ def main() -> None:
           f"copper_components={metrics.get('copper_components')} "
           f"air_gap_bridge={metrics.get('air_gap_iron_bridge')}")
 
-    print("[rebuild] display build (160^3)...")
+    print("[rebuild] display build (224x224x132, ~0.63mm)...")
     t0 = time.perf_counter()
     dmotor = field_driven_motor(dcfg)
     dmf = dmotor.build()

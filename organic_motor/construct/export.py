@@ -53,6 +53,9 @@ def save_checkpoint(
     coolant = mf.sdfs.get("coolant")
     if coolant is not None:
         arrays["rho_coolant"] = coolant.to_density()
+    insulator = mf.sdfs.get("insulator")
+    if insulator is not None:
+        arrays["rho_insulator"] = insulator.to_density()
     if magnetization is not None:
         arrays["magnetization"] = np.asarray(magnetization, dtype=np.float32)
     if metrics:

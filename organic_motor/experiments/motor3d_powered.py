@@ -221,6 +221,12 @@ def _collision_diagnostics(
     }
 
 
+def _printed_series_coils(cfg: MotorConfig3D) -> int:
+    """Coils of one phase wired in series in the printed stator."""
+    n_slots = 12
+    return max(1, n_slots // 3)
+
+
 def _nominal_phase_current(result: ForwardResult3D, cfg: MotorConfig3D) -> float:
     phase_j = np.asarray(result.phase_current_density)
     z_index = cfg.Nz // 2
@@ -363,6 +369,15 @@ def compute_powered_maps(
                   f"lin={t_lin[p, i]:+.4f} quad={(t_static[p, i] - t0_map[i]):+.4f}",
                   flush=True)
         nominal[p] = float(np.mean(currents))
+        # The printed winding's four coil loops are wired in SERIES (N = 4
+        # turns): the terminal current equals the per-coil loop current,
+        # while the positive-side integral sums ALL FOUR loops at the unit
+        # map.  Without this division the map's "nominal current" is ~4x
+        # the terminal current and the transient sees a 4x-deflated torque
+        # per ampere (measured: motor crawled at 0.06 rad/s from standstill).
+        if getattr(cfg, "winding_style", "printed") == "printed":
+            n_series = _printed_series_coils(cfg)
+            nominal[p] /= max(1, n_series)
 
     t2_diag = t_static - t0_map[None, :]  # (3, na) self I^2 coefficients
     period = 2.0 * np.pi / cfg.pole_pairs

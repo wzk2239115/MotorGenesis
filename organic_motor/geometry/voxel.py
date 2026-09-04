@@ -28,12 +28,13 @@ class VoxelVolume:
     copper: np.ndarray | None = None
     air: np.ndarray | None = None
     coolant: np.ndarray | None = None
+    insulator: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         shape = np.asarray(self.iron).shape
         if len(shape) != 3 or any(n < 1 for n in shape):
             raise ValueError("material volumes must have non-empty shape (Nx, Ny, Nz)")
-        for name in ("pm", "copper", "air", "coolant"):
+        for name in ("pm", "copper", "air", "coolant", "insulator"):
             value = getattr(self, name)
             if value is not None and np.asarray(value).shape != shape:
                 raise ValueError(f"{name} shape must match iron shape {shape}")
@@ -50,6 +51,8 @@ class VoxelVolume:
         if self.copper is not None:
             result["copper"] = np.asarray(self.copper)
         result["pm"] = np.asarray(self.pm)
+        if self.insulator is not None:
+            result["insulator"] = np.asarray(self.insulator)
         if self.coolant is not None:
             result["coolant"] = np.asarray(self.coolant)
         return result

@@ -19,6 +19,12 @@ class MotorConfig3D(MotorConfig):
     shape: tuple[int, int, int] = (56, 56, 36)
     box_size: tuple[float, float, float] = (0.140, 0.140, 0.100)
     center: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # 10 poles / 12 slots: THE canonical printed concentrated-winding pair
+    # (one coil per tooth, half-slot sides, winding factor 0.933).  The old
+    # default p=2 made a 12s4p machine whose span-1 coils have a
+    # structurally unbalanced PM flux linkage (2:1 between phases --
+    # measured T1 0.028 vs 0.143 N*m); 12s10p restores per-phase symmetry.
+    pole_pairs: int = 5
     # Resolution budget (P2 redesign): the magnet must span >= ~3 cells
     # and the open gap ~2 cells at the PHYSICS grid for torque to be
     # trustworthy.  With 96x96x58 cells (1.47 x 1.47 x 1.75 mm):
@@ -42,6 +48,11 @@ class MotorConfig3D(MotorConfig):
     stack_length: float = 0.060
     axial_airgap: float = 0.001
     excitation_mode: str = "terminal"
+    winding_style: str = "printed"
+    # ^ "printed": 12s10p concentrated coils (one per tooth, half-slot
+    #   sides, physical bridge end turns -- PrintedCoilNetlist is the
+    #   geometry/source/audit single source of truth).  "legacy": the old
+    #   distributed span-3 winding with radial phase layers.
     impressed_end_closure: bool = True
     # ^ close the impressed phase loops INSIDE the domain (axial columns
     #   confined to the stack + azimuthal end-turn arc currents) instead of
@@ -58,6 +69,14 @@ class MotorConfig3D(MotorConfig):
     torque_n_z: int = 24
     torque_n_r: int = 24
     connectivity_steps: int = 12
+    # Reduced-order conjugate heat transfer of the printed cooling channels:
+    # beta = h * S_v per coolant voxel (h ~ 3000 W/m^2K turbulent water in a
+    # 2mm channel; S_v ~ 4/D ~ 2000 1/m).  Without this sink the channels
+    # are thermally-dead k_air voids and every coil floats thermally.
+    thermal_h_coolant: float = 3000.0
+    thermal_channel_s_v: float = 2000.0
+    thermal_coolant_temperature: float = 40.0
+    thermal_k_insulator: float = 1.5
     w_curvature: float = 1e-7
     w_connectivity: float = 0.2
     w_ownership: float = 0.1

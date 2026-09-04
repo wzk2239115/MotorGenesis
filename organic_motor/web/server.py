@@ -41,9 +41,10 @@ def _cache_dir(run_dir: Path) -> Path:
 
 def _glb_cache_path(
     run_dir: Path, step: int, level: float, smoothing: str, iterations: int,
-    npz_mtime: float = 0.0,
+    npz_mtime: float = 0.0, extra: str = "",
 ) -> Path:
-    key = f"step_{step:06d}_level{level:g}_{smoothing}_{iterations}_mt{int(npz_mtime)}"
+    key = (f"step_{step:06d}_level{level:g}_{smoothing}_{iterations}"
+           f"_mt{int(npz_mtime)}_{extra}")
     digest = hashlib.md5(key.encode()).hexdigest()[:10]
     return _cache_dir(run_dir) / f"{digest}_{key}.glb"
 
@@ -108,19 +109,24 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
         level: float = 0.35,
         smoothing: str = "taubin",
         iterations: int = 5,
+        view: str = "full",
     ) -> Response:
+        if view not in ("full", "stator"):
+            raise HTTPException(status_code=400, detail="view must be full or stator")
         run_dir = _find_run(run_name)
         npz = run_dir / "checkpoints" / f"step_{step:06d}.npz"
         if not npz.is_file():
             raise HTTPException(status_code=404, detail="checkpoint not found")
         npz_mtime = npz.stat().st_mtime
-        cache = _glb_cache_path(run_dir, step, level, smoothing, iterations, npz_mtime)
+        cache = _glb_cache_path(run_dir, step, level, smoothing, iterations, npz_mtime,
+                                extra=view)
         if not cache.is_file():
             glb = builder.checkpoint_to_glb(
                 npz,
                 level=level,
                 smoothing=smoothing,
                 smoothing_iterations=iterations,
+                view=view,
             )
             cache.write_bytes(glb)
         return Response(content=cache.read_bytes(), media_type="model/gltf-binary")

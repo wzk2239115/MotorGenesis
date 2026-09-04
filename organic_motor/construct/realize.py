@@ -56,12 +56,31 @@ def realize(
         densities["iron"] = rho_iron
         densities["air"] = rho_air
     rotor_design = np.asarray(domain_masks3d(cfg)["rotor_design"], dtype=np.float32)
+    insulator = None
+    if "insulator" in mf.sdfs:
+        insulator = np.asarray(
+            mf.sdfs["insulator"].to_density(bandwidth), dtype=np.float32
+        )
+        # The complement already carries the insulator region as air; move
+        # it to its own field so the thermal blend can treat it as a solid
+        # dielectric while the electromagnetic solves keep seeing air.
+        densities = dict(densities)
+        densities["air"] = np.clip(
+            np.asarray(densities["air"], dtype=np.float32) - insulator, 0.0, 1.0
+        ).astype(np.float32)
+    coolant = None
+    if "coolant" in mf.sdfs:
+        coolant = np.asarray(
+            mf.sdfs["coolant"].to_density(bandwidth), dtype=np.float32
+        )
     fields = TopologyFields3D(
         rho_air=jnp.asarray(densities["air"]),
         rho_iron=jnp.asarray(densities["iron"]),
         rho_copper=jnp.asarray(densities["copper"]),
         rho_pm=jnp.asarray(densities["pm"]),
         rotor_ownership=jnp.asarray(rotor_design),
+        rho_insulator=jnp.asarray(insulator) if insulator is not None else None,
+        rho_coolant=jnp.asarray(coolant) if coolant is not None else None,
     )
     if magnetization_raw is None:
         mag = np.zeros((3,) + cfg.shape, dtype=np.float32)

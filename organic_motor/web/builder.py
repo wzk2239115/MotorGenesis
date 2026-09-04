@@ -21,12 +21,13 @@ from organic_motor.geometry.export import MATERIAL_COLORS, material_mesh
 from organic_motor.geometry.voxel import VoxelVolume
 
 
-MATERIALS = ("iron", "copper", "pm", "coolant")
+MATERIALS = ("iron", "copper", "pm", "coolant", "insulator")
 MATERIAL_LABEL = {
     "iron": "铁 Iron",
     "copper": "铜 Copper",
     "pm": "磁钢 PM",
     "coolant": "冷却液 Coolant",
+    "insulator": "绝缘 Insulator",
 }
 
 
@@ -75,9 +76,41 @@ def _load_volume(npz_path: Path) -> VoxelVolume:
             if "rho_coolant" in data.files
             else None
         )
+        insulator = (
+            np.asarray(data["rho_insulator"], dtype=np.float32)
+            if "rho_insulator" in data.files
+            else None
+        )
     return VoxelVolume(
         iron=iron, pm=pm, spacing=spacing, origin=origin, copper=copper, air=air,
-        coolant=coolant,
+        coolant=coolant, insulator=insulator,
+    )
+
+
+def apply_view(vol: VoxelVolume, view: str) -> VoxelVolume:
+    """Material subset for a named view.
+
+    ``stator``: the printed-stator reference view (yoke + exoskeleton +
+    winding + insulator, rotor/magnets removed) -- compare this with
+    printed-stator reference imagery, not the full assembly frontal view.
+    ``full``: the functional assembly.
+    """
+    if view not in ("full", "stator"):
+        raise ValueError(f"unknown view {view!r}")
+    if view == "full":
+        return vol
+    nx, ny, nz = vol.shape
+    dx, dy, _dz = vol.spacing
+    ox, oy, _oz = vol.origin
+    x = ox + dx * np.arange(nx, dtype=np.float32)
+    y = oy + dy * np.arange(ny, dtype=np.float32)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    r = np.sqrt(X**2 + Y**2)[..., None]
+    rotor_side = (r < 0.0295).astype(np.float32)
+    iron = vol.iron * (1.0 - rotor_side)
+    return VoxelVolume(
+        iron=iron, pm=np.zeros_like(vol.pm), spacing=vol.spacing, origin=vol.origin,
+        copper=vol.copper, air=vol.air, coolant=vol.coolant, insulator=vol.insulator,
     )
 
 
@@ -88,16 +121,18 @@ def checkpoint_to_glb(
     smoothing: Literal["none", "taubin", "laplacian"] = "taubin",
     smoothing_iterations: int = 5,
     materials: Iterable[str] = MATERIALS,
+    view: str = "full",
 ) -> bytes:
     """Build a single GLB containing one smoothed mesh per requested material.
 
     The exported meshes are watertight isosurfaces with displacement-limited
     Taubin smoothing, so the viewer shows smooth motor geometry rather than
-    voxel blocks even at modest grid resolution.
+    voxel blocks even at modest grid resolution.  ``view="stator"`` strips
+    the rotor assembly for the printed-stator reference view.
     """
     import trimesh
 
-    vol = _load_volume(npz_path)
+    vol = apply_view(_load_volume(npz_path), view)
     scene = trimesh.Scene()
     for material in materials:
         if material not in vol.materials:

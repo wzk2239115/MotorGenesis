@@ -123,6 +123,72 @@ def _phase_belts(cfg: MotorConfig3D, override: jnp.ndarray | None = None) -> jnp
     )
 
 
+def _printed_end_closure_currents(
+    phase_jz: jnp.ndarray, cfg: MotorConfig3D,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """End-turn bridge currents for the PRINTED concentrated winding.
+
+    The printed coil is a physical closed loop: axial current in the two
+    side bands, azimuthal current in the copper bridges over both tooth
+    ends.  The impressed columns supply the side bands; this routine
+    supplies the bridges -- with per-radius flux matching
+    ``J_arc(r) = J_col(r) * side_width(r) / end_band`` so the total loop
+    current is preserved at every radius, not just globally.
+
+    Coil geometry comes from :class:`PrintedCoilNetlist` (the same single
+    source of truth the copper geometry uses): coil n's bridge spans the
+    full frame pitch, top bridge current runs +theta * polarity, bottom
+    bridge -theta * polarity -- the loop closes exactly.
+    """
+    nx, ny, nz = cfg.shape
+    X, Y, Z = meshgrid3d(cfg)
+    cx, cy, cz = cfg.center[0], cfg.center[1], cfg.center[2]
+    r = jnp.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+    theta = jnp.arctan2(Y - cy, X - cx)
+    hz = cfg.stator_half_length
+
+    from organic_motor.construct.winding_netlist import (
+        PRINTED_CLAD_HALF,
+        PRINTED_END_BAND,
+        PRINTED_FRAME_HALF,
+        printed_netlist,
+    )
+
+    netlist = printed_netlist(cfg)
+    pitch = 2.0 * jnp.pi / netlist.n_slots
+    n_tooth = jnp.mod(jnp.round(theta / pitch), netlist.n_slots).astype(jnp.int32)
+    u = jnp.mod(theta - n_tooth * pitch + jnp.pi, 2.0 * jnp.pi) - jnp.pi
+
+    phase_of = jnp.zeros((netlist.n_slots,), dtype=jnp.int32)
+    sign_of = jnp.zeros((netlist.n_slots,), dtype=jnp.float32)
+    for tooth, ph, pol in netlist.coil_table():
+        phase_of = phase_of.at[tooth].set(ph)
+        sign_of = sign_of.at[tooth].set(float(pol))
+    phase_grid = phase_of[n_tooth]
+    sign_grid = sign_of[n_tooth]
+
+    top_slab = ((Z - cz > hz) & (Z - cz <= hz + PRINTED_END_BAND)).astype(jnp.float32)
+    bot_slab = ((cz - Z > hz) & (cz - Z <= hz + PRINTED_END_BAND)).astype(jnp.float32)
+    stack_window = (jnp.abs(Z - cz) <= hz).astype(jnp.float32)
+    window = (jnp.abs(u) <= PRINTED_FRAME_HALF).astype(jnp.float32)
+
+    side_width = (PRINTED_FRAME_HALF - PRINTED_CLAD_HALF) * r
+    gain = side_width / PRINTED_END_BAND
+    th_hat_x = -jnp.sin(theta)
+    th_hat_y = jnp.cos(theta)
+
+    jx_all = jnp.zeros((3, nx, ny, nz), dtype=phase_jz.dtype)
+    jy_all = jnp.zeros((3, nx, ny, nz), dtype=phase_jz.dtype)
+    for phase in range(3):
+        amp = jnp.maximum(jnp.max(jnp.abs(phase_jz[phase])), 1e-30)
+        sel = (phase_grid == phase).astype(phase_jz.dtype)
+        # top: +theta * polarity, bottom: -theta * polarity
+        mag = amp * sign_grid * sel * gain * (top_slab - bot_slab) * window
+        jx_all = jx_all.at[phase].set(jx_all[phase] + th_hat_x * mag)
+        jy_all = jy_all.at[phase].set(jy_all[phase] + th_hat_y * mag)
+    return jx_all, jy_all, stack_window
+
+
 def _end_closure_currents(
     phase_jz: jnp.ndarray, cfg: MotorConfig3D, belts: jnp.ndarray,
     n_slots: int = 12, coil_span: int = 3,
@@ -423,17 +489,20 @@ def _forward3d_core(
             )
             zeros = jnp.zeros_like(jz)
             if getattr(cfg, "impressed_end_closure", False):
-                # Close every phase loop INSIDE the domain: columns are
-                # confined to the stack and azimuthal end-turn arc currents
-                # carry the return path (see _end_closure_currents).  The
-                # saved phase_current keeps the axial columns only -- the
-                # nominal-current and loss consumers are unchanged, and the
-                # end closure is a source-completion device, not a thermal
-                # model of the end winding.
+                # Close every phase loop INSIDE the domain.  For the printed
+                # concentrated winding the end-turn bridges are PHYSICAL
+                # copper (per-radius flux matched, from the netlist's coil
+                # table); for the legacy distributed winding the generic
+                # slot-to-slot arc closure is used.
                 belts = _phase_belts(cfg, phase_belts_override)
-                jx, jy, stack_window = _end_closure_currents(
-                    phase_jz, cfg, belts,
-                )
+                if getattr(cfg, "winding_style", "printed") == "printed":
+                    jx, jy, stack_window = _printed_end_closure_currents(
+                        phase_jz, cfg,
+                    )
+                else:
+                    jx, jy, stack_window = _end_closure_currents(
+                        phase_jz, cfg, belts,
+                    )
                 jz = jz * stack_window
                 phase_jz = phase_jz * stack_window[None]
                 J = jnp.stack((jnp.sum(jx, axis=0), jnp.sum(jy, axis=0), jz), axis=-1)
@@ -480,7 +549,8 @@ def _forward3d_core(
     q_fe = jnp.mean(jnp.stack(iron_losses), axis=0)
     q_total = q_cu + q_fe
     conductivity = thermal_conductivity(
-        fields.rho_air, fields.rho_iron, fields.rho_copper, fields.rho_pm, cfg
+        fields.rho_air, fields.rho_iron, fields.rho_copper, fields.rho_pm, cfg,
+        rho_insulator=getattr(fields, "rho_insulator", None),
     )
     temperature_field = steady_temperature(
         q_total,
@@ -489,9 +559,17 @@ def _forward3d_core(
         fields.rho_copper,
         fields.rho_pm,
         cfg,
+        rho_insulator=getattr(fields, "rho_insulator", None),
+        rho_coolant=getattr(fields, "rho_coolant", None),
     )
     thermal_residual = thermal_relative_residual(
-        temperature_field, q_total, conductivity, cfg
+        temperature_field, q_total, conductivity, cfg,
+        internal_sink_beta=(
+            getattr(cfg, "thermal_h_coolant", 3000.0)
+            * getattr(cfg, "thermal_channel_s_v", 2000.0)
+            * fields.rho_coolant
+        ) if getattr(fields, "rho_coolant", None) is not None else None,
+        internal_sink_temperature=getattr(cfg, "thermal_coolant_temperature", 40.0),
     )
     if cfg.excitation_mode == "terminal":
         source_div = jnp.max(jnp.stack(electric_residuals))
