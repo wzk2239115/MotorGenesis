@@ -1393,6 +1393,400 @@ class StructuralContinuity:
 
 
 # ---------------------------------------------------------------------------
+# P5: field-grown stator cell (swept multi-band copper, arched walls)
+# ---------------------------------------------------------------------------
+
+
+def _band_centerline(
+    r_k: float,
+    amp_k: float,
+    side_angle: float,
+    zc: float,
+    n_arch: int = 10,
+) -> np.ndarray:
+    """Centreline polyline for one swept copper band around a tooth.
+
+    A closed loop in the ``(theta, z)`` plane at constant radius ``r_k``:
+    two axial sides at ``theta = +/- side_angle`` (the slot sides) joined
+    by raised-cosine arches above and below the stack.  The cosine gives
+    a smooth (C1) tangent at the junctions — no kink, no stress
+    concentration, and a self-supporting overhang angle everywhere.
+
+    ``amp_k`` grows with ``r_k`` so outer bands arch higher than inner
+    ones: the stacked bands form a dome whose apex is the outermost band.
+    """
+    ca, sa = np.cos(side_angle), np.sin(side_angle)
+    thetas = np.linspace(-side_angle, side_angle, n_arch)
+    cos_profile = (1.0 + np.cos(np.pi * thetas / side_angle)) * 0.5
+
+    pts = [
+        [r_k * ca, -r_k * sa, -zc],   # side A bottom
+        [r_k * ca, -r_k * sa,  zc],   # side A top
+    ]
+    for th, c in zip(thetas, cos_profile):
+        pts.append([r_k * np.cos(th), r_k * np.sin(th), zc + amp_k * c])
+
+    pts.append([r_k * ca,  r_k * sa,  zc])    # side B top
+    pts.append([r_k * ca,  r_k * sa, -zc])    # side B bottom
+    for th, c in zip(reversed(thetas), reversed(cos_profile)):
+        pts.append([r_k * np.cos(th), r_k * np.sin(th), -(zc + amp_k * c)])
+
+    return np.array(pts, dtype=np.float64)
+
+
+@dataclass
+class StatorCell:
+    """One electromagnetic-thermal-structural cell of a printed stator.
+
+    Replaces the monolithic CSG stator (PrintedStatorCore + Winding +
+    Insulation + Exoskeleton + Cooling) with a single field-grown cell
+    that is then replicated polarly by :class:`StatorCellArray`.
+
+    Each cell carries:
+      - iron tooth (prism, the magnetic pole piece)
+      - local yoke arc (one cell pitch of back-iron)
+      - 6-8 swept copper bands (raised-cosine arched end-turns, dome-
+        stacked with outer bands rising higher than inner)
+      - interface-only insulation (thin cladding on tooth flanks + end
+        caps — NOT a sock; copper surface stays EXPOSED)
+      - in-band coolant channels (offset inside each copper band, coolant
+        at the Joule-heat source)
+    """
+
+    cfg: MotorConfig3D
+    tooth_index: int = 0
+    n_bands: int = 7
+    band_radius: float = 0.0007
+    channel_wall: float = 0.0004
+    arch_base: float = 0.002
+    arch_slope: float = 1.0
+    clad_thickness: float = 0.0003
+    tooth_tip_dome: float = 0.0015
+
+    def _band_radii(self, cfg: MotorConfig3D) -> tuple[np.ndarray, np.ndarray]:
+        r_wi = cfg.R_winding_inner
+        r_wo = cfg.R_winding_outer - 0.0005
+        r_k = np.linspace(r_wi + 0.0003, r_wo - 0.0003, self.n_bands)
+        amp = self.arch_base + (r_k - r_wi) * self.arch_slope
+        return r_k, amp
+
+    def _theta0(self) -> float:
+        from organic_motor.construct.winding_netlist import printed_netlist
+        netlist = printed_netlist(self.cfg)
+        pitch = 2.0 * np.pi / netlist.n_slots
+        return self.tooth_index * pitch
+
+    def build_iron(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_TOOTH_HALF, printed_netlist,
+        )
+        cfg = self.cfg
+        angles = _angles_of(cfg)
+        _X, _Y, Z, r, theta = angles
+        cz = cfg.center[2]
+        zh = cfg.stator_half_length
+        th0 = self._theta0()
+        d_ang = np.mod(theta - th0 + np.pi, 2.0 * np.pi) - np.pi
+
+        # tooth prism with slightly domed tip (self-supporting AM)
+        tooth_body = np.maximum(
+            np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
+            np.abs(d_ang) - PRINTED_TOOTH_HALF,
+        )
+        tooth_dz = np.abs(Z - cz) - (zh + self.tooth_tip_dome)
+        tooth = np.maximum(tooth_body, tooth_dz)
+        # local yoke arc (one cell pitch)
+        yoke = np.maximum(
+            np.maximum(r - cfg.R_design, cfg.R_winding_outer - r),
+            np.abs(d_ang) - (np.pi / 6.0),
+        )
+        yoke = np.maximum(yoke, np.abs(Z - cz) - zh)
+        iron = np.minimum(tooth, yoke).astype(np.float32)
+        mf.add(SDFVoxelField(sdf=iron, spacing=cfg.spacing, origin=cfg.origin),
+               "iron", priority=True)
+        return mf
+
+    def build_copper(self, mf: MaterialField, grid=None) -> MaterialField:
+        from organic_motor.construct.field import polyline_capsule_sdf
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_FRAME_HALF, printed_netlist,
+        )
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        th0 = self._theta0()
+        cz = cfg.center[2]
+        zc = netlist.coil_zc(cfg)
+        r_k, amp = self._band_radii(cfg)
+        table = {t: ph for t, ph, _ in netlist.coil_table()}
+        phase = table[self.tooth_index]
+
+        copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+        phase_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
+        for k in range(self.n_bands):
+            pts = _band_centerline(r_k[k], amp[k], PRINTED_FRAME_HALF, zc)
+            # rotate to tooth position
+            rot = th0
+            ca, sa = np.cos(rot), np.sin(rot)
+            pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
+            band = polyline_capsule_sdf(cfg.shape, cfg.spacing, cfg.origin,
+                                        pts, self.band_radius, grid=grid)
+            copper_sdf = np.minimum(copper_sdf, band)
+            phase_sdf = np.minimum(phase_sdf, band)
+
+        mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin),
+               "copper", priority=True)
+
+        # accumulate phase SDF for the whole stator (multi-call safe)
+        prev = mf.metadata.get("winding_phase_sdf")
+        if prev is None:
+            mf.metadata["winding_phase_sdf"] = np.full(
+                (3,) + cfg.shape, 1e9, dtype=np.float32)
+        ps = mf.metadata["winding_phase_sdf"]
+        ps[phase] = np.minimum(ps[phase], phase_sdf)
+        mf.metadata["winding_phase_sdf"] = ps
+        return mf
+
+    def build_insulation(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_TOOTH_HALF, PRINTED_CLAD_HALF, printed_netlist,
+        )
+        cfg = self.cfg
+        angles = _angles_of(cfg)
+        _X, _Y, Z, r, theta = angles
+        cz = cfg.center[2]
+        zh = cfg.stator_half_length
+        th0 = self._theta0()
+        d_ang = np.mod(theta - th0 + np.pi, 2.0 * np.pi) - np.pi
+        t = self.clad_thickness
+
+        # (1) tooth-flank cladding: thin shell between tooth and clad angles
+        clad_outer = np.maximum(
+            np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
+            np.abs(d_ang) - PRINTED_CLAD_HALF,
+        )
+        clad_inner = np.maximum(
+            np.maximum(r - cfg.R_winding_outer, (cfg.R_stator_inner + 0.0002) - r),
+            np.abs(d_ang) - PRINTED_TOOTH_HALF,
+        )
+        clad = np.maximum(clad_outer, -clad_inner + 2 * t * 0)  # wall logic
+        clad = np.maximum(
+            np.maximum(clad, -(clad_inner - t)),
+            np.abs(Z - cz) - (zh + 0.0001),
+        )
+        # simpler: ring between TOOTH_HALF and CLAD_HALF
+        flank = np.maximum(
+            np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
+            np.maximum(
+                np.abs(d_ang) - PRINTED_CLAD_HALF,
+                -(np.abs(d_ang) - PRINTED_TOOTH_HALF),
+            ),
+        )
+        flank = np.maximum(flank, np.abs(Z - cz) - (zh + 0.0006))
+        insulator = flank.astype(np.float32)
+
+        # (2) tooth end caps
+        for sign in (+1, -1):
+            cap = np.maximum(
+                np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
+                np.maximum(
+                    np.abs(d_ang) - PRINTED_TOOTH_HALF,
+                    np.abs(Z - (cz + sign * (zh + 0.0003))) - 0.0004,
+                ),
+            )
+            insulator = np.minimum(insulator, cap.astype(np.float32))
+
+        # (3) slot-center separator (thin wall at cell boundary)
+        pitch = 2.0 * np.pi / printed_netlist(cfg).n_slots
+        sep_d = np.abs(np.mod(theta - th0 - 0.5 * pitch + np.pi, 2*np.pi) - np.pi)
+        sep = np.maximum(
+            np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
+            np.maximum(sep_d - np.deg2rad(0.5), np.abs(Z - cz) - (zh + 0.002)),
+        )
+        insulator = np.minimum(insulator, sep.astype(np.float32))
+
+        prev = mf.metadata.get("_insulator_sdf")
+        if prev is not None:
+            insulator = np.minimum(prev, insulator)
+        mf.metadata["_insulator_sdf"] = insulator
+        return mf
+
+    def build_coolant(self, mf: MaterialField, grid=None) -> MaterialField:
+        from organic_motor.construct.field import polyline_capsule_sdf
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_FRAME_HALF, printed_netlist,
+        )
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        th0 = self._theta0()
+        cz = cfg.center[2]
+        zc = netlist.coil_zc(cfg)
+        r_k, amp = self._band_radii(cfg)
+        ch_r = self.band_radius - self.channel_wall
+        if ch_r <= 0.0:
+            return mf
+
+        coolant = np.full(cfg.shape, 1e9, dtype=np.float32)
+        for k in range(self.n_bands):
+            pts = _band_centerline(r_k[k], amp[k], PRINTED_FRAME_HALF, zc)
+            ca, sa = np.cos(th0), np.sin(th0)
+            pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
+            ch = polyline_capsule_sdf(cfg.shape, cfg.spacing, cfg.origin,
+                                      pts, ch_r, grid=grid)
+            coolant = np.minimum(coolant, ch)
+
+        prev = mf.metadata.get("_coolant_sdf")
+        if prev is not None:
+            coolant = np.minimum(prev, coolant)
+        mf.metadata["_coolant_sdf"] = coolant
+        return mf
+
+
+@dataclass
+class StatorCellArray:
+    """Twelve polarly-replicated StatorCells + shared exoskeleton.
+
+    Replaces the five P4 monolithic stator classes with one cell mother
+    replicated 12 times around the circumference.  The exoskeleton (bearing
+    crown, arched radial walls, base collar, bottom plate) is shared
+    structural iron grown between the cells.
+    """
+
+    cfg: MotorConfig3D
+    n_bands: int = 7
+    band_radius: float = 0.0007
+    channel_wall: float = 0.0004
+    arch_base: float = 0.002
+    arch_slope: float = 1.0
+    clad_thickness: float = 0.0003
+    hub_inner: float = 0.0155
+    hub_outer: float = 0.020
+    wall_half_angle: float = np.deg2rad(0.6)
+    base_z0: float = -0.0415
+    base_z1: float = -0.031
+    plate_z0: float = -0.0435
+    plate_z1: float = -0.0412
+
+    def build(self, mf: MaterialField) -> MaterialField:
+        from organic_motor.construct.winding_netlist import printed_netlist
+        from organic_motor.construct.field import SDFVoxelField
+        cfg = self.cfg
+        netlist = printed_netlist(cfg)
+        n_slots = netlist.n_slots
+        pitch = 2.0 * np.pi / n_slots
+        cz = cfg.center[2]
+        angles = _angles_of(cfg)
+        _X, _Y, Z, r, theta = angles
+
+        # --- iron: teeth + local yoke arcs (per-cell) ---
+        for n in range(n_slots):
+            cell = StatorCell(cfg, tooth_index=n, n_bands=self.n_bands,
+                              band_radius=self.band_radius,
+                              channel_wall=self.channel_wall,
+                              arch_base=self.arch_base,
+                              arch_slope=self.arch_slope,
+                              clad_thickness=self.clad_thickness)
+            # build iron into a temp mf
+            cell.build_iron(mf)
+        # The per-cell build_iron already adds to mf via mf.add() — good.
+
+        # --- exoskeleton: bearing crown + arched walls + base + plate ---
+        from organic_motor.construct.winding_netlist import (
+            PRINTED_FRAME_HALF, PRINTED_CLAD_HALF,
+        )
+        # bearing crown hub ring
+        crown = np.maximum(
+            np.maximum(r - self.hub_outer, self.hub_inner - r),
+            np.abs(Z - (cz + 0.035)) - 0.002,
+        )
+        exo = crown
+        # arched radial walls at slot centres
+        for n in range(n_slots):
+            wall_c = (n + 0.5) * pitch
+            d_ang = np.mod(theta - wall_c + np.pi, 2*np.pi) - np.pi
+            ang_bound = np.abs(d_ang) - self.wall_half_angle
+            # z(r) arch: wall descends from crown to yoke
+            t = np.clip((r - self.hub_outer) / (cfg.R_design - self.hub_outer), 0, 1)
+            z_wall_top = (cz + 0.037) - (0.037 - 0.0305) * np.sqrt(t)
+            z_wall_bot = cz + 0.0305
+            d_z_wall = np.maximum(Z - z_wall_top, z_wall_bot - Z)
+            r_bound = np.maximum(r - cfg.R_design, self.hub_inner - r)
+            wall = np.maximum(np.maximum(ang_bound * r, d_z_wall), r_bound)
+            exo = np.minimum(exo, wall.astype(np.float32))
+
+        # base collar (carries winding pockets)
+        frame_func = _printed_frame_sdf(cfg, margin=0.0008, netlist=netlist, cache=angles)
+        shell_base = np.maximum(
+            np.maximum(r - cfg.R_design, cfg.R_stator_inner - r),
+            np.abs(Z - (cz + (self.base_z0 + self.base_z1) * 0.5)) - (self.base_z1 - self.base_z0) * 0.5,
+        )
+        base = np.maximum(shell_base, -frame_func)
+        exo = np.minimum(exo, base.astype(np.float32))
+
+        # bottom plate
+        plate = np.maximum(
+            np.maximum(r - cfg.R_design, cfg.R_stator_inner - r),
+            np.abs(Z - (cz + (self.plate_z0 + self.plate_z1) * 0.5)) - (self.plate_z1 - self.plate_z0) * 0.5,
+        )
+        exo = np.minimum(exo, plate.astype(np.float32))
+
+        mf.add(SDFVoxelField(sdf=exo.astype(np.float32), spacing=cfg.spacing, origin=cfg.origin),
+               "iron", priority=True)
+
+        # --- copper: 12 cells of swept bands ---
+        # Pre-compute meshgrid once for all polyline_capsule_sdf calls
+        grid = (_X, _Y, Z)
+        for n in range(n_slots):
+            cell = StatorCell(cfg, tooth_index=n, n_bands=self.n_bands,
+                              band_radius=self.band_radius,
+                              channel_wall=self.channel_wall,
+                              arch_base=self.arch_base,
+                              arch_slope=self.arch_slope,
+                              clad_thickness=self.clad_thickness)
+            cell.build_copper(mf, grid=grid)
+        # merge phase_sdf from mf.metadata
+        phase_sdf = mf.metadata.get("winding_phase_sdf")
+        copper_sdf = mf.sdfs.get("copper")
+        if copper_sdf is not None:
+            phase_owner = np.argmin(phase_sdf, axis=0).astype(np.int8)
+            phase_owner[copper_sdf.sdf >= 0.0] = -1
+            mf.metadata["winding_phase_owner"] = phase_owner
+            mf.metadata["winding_netlist"] = netlist
+            mf.metadata["winding_style"] = "printed"
+
+        # --- insulation (interface-only, no sock) ---
+        for n in range(n_slots):
+            cell = StatorCell(cfg, tooth_index=n, n_bands=self.n_bands,
+                              band_radius=self.band_radius,
+                              channel_wall=self.channel_wall,
+                              arch_base=self.arch_base,
+                              arch_slope=self.arch_slope,
+                              clad_thickness=self.clad_thickness)
+            cell.build_insulation(mf)
+        ins_sdf = mf.metadata.get("_insulator_sdf")
+        if ins_sdf is not None:
+            mf.add(SDFVoxelField(sdf=ins_sdf.astype(np.float32),
+                                 spacing=cfg.spacing, origin=cfg.origin),
+                   "insulator", priority=True)
+
+        # --- coolant (in-band channels) ---
+        for n in range(n_slots):
+            cell = StatorCell(cfg, tooth_index=n, n_bands=self.n_bands,
+                              band_radius=self.band_radius,
+                              channel_wall=self.channel_wall,
+                              arch_base=self.arch_base,
+                              arch_slope=self.arch_slope,
+                              clad_thickness=self.clad_thickness)
+            cell.build_coolant(mf, grid=grid)
+        cool_sdf = mf.metadata.get("_coolant_sdf")
+        if cool_sdf is not None:
+            mf.add(SDFVoxelField(sdf=cool_sdf.astype(np.float32),
+                                 spacing=cfg.spacing, origin=cfg.origin),
+                   "coolant", priority=True)
+
+        return mf
+
+
+# ---------------------------------------------------------------------------
 # Whole motor assembly
 # ---------------------------------------------------------------------------
 
@@ -1439,16 +1833,19 @@ def baseline_motor(cfg: MotorConfig3D | None = None) -> Motor:
 def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
     """A motor built entirely from field-driven computational objects.
 
-    P4 topology: the printed multi-material stator.  Every tooth is one
-    electromagnetic/cooling CELL -- iron wedge, hollow printed coil with an
-    internal coolant channel, dielectric kit (cladding, caps, separators,
-    pocket liner) -- and the structure is an exoskeleton grown around the
-    cells: bearing crown with 12 thin radial walls, solid base collar
-    carrying the winding pockets, bottom plate with the coolant ports.
+    P5 topology: the printed multi-material stator is now grown from
+    field-driven CELLS.  Each of the 12 teeth is one electromagnetic/
+    thermal/structural cell -- iron tooth, 6-8 swept copper bands with
+    raised-cosine arched end-turns (dome-stacked), interface-only
+    insulation (no sock -- copper stays exposed), in-band coolant
+    channels -- replicated polarly by :class:`StatorCellArray`.  The
+    exoskeleton (bearing crown, arched radial walls, base collar) is
+    grown between the cells with z(r) arch profiles, not flat z=const.
+
     The forbidden forms (outer spiral barrel, cylindrical housing, flat
-    spoked end caps, distributed lap winding) are gone; cooling lives
-    INSIDE the copper now.  The rotor keeps the P2-validated radius budget
-    (4mm magnets, 3mm gap, non-magnetic sleeve).
+    spoked end caps, distributed lap winding, monolithic copper frame,
+    insulator sock) are gone.  The rotor keeps the P2-validated radius
+    budget (4mm magnets, 3mm gap, non-magnetic sleeve).
     """
     cfg = cfg or MotorConfig3D()
     return Motor(cfg, components=[
@@ -1456,11 +1853,7 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
         RotorCore(cfg),
         FieldDrivenMagnets(cfg),
         RotorSleeve(cfg),
-        PrintedStatorCore(cfg),
-        StatorExoskeleton(cfg),
-        PrintedStatorWinding(cfg),
-        WindingInsulation(cfg),
-        CoilCoolingNetwork(cfg),
+        StatorCellArray(cfg, n_bands=7, channel_wall=0.0007),
         FunctionalVoids(cfg),
         StructuralContinuity(cfg),
     ])
