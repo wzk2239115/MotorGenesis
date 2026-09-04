@@ -291,7 +291,7 @@ def default_netlist(cfg: MotorConfig3D) -> CoilNetlist:
 #   +/-SLOT_HALF (= pitch/2)             cell boundary at the slot centre
 PRINTED_TOOTH_HALF = np.deg2rad(7.5)
 PRINTED_CLAD_HALF = np.deg2rad(8.44)     # tooth + 0.6mm cladding at r ~ 36.75mm
-PRINTED_FRAME_HALF = np.deg2rad(13.8)    # copper frame; wall gap 0.6 deg to slot centre
+PRINTED_FRAME_HALF = np.deg2rad(12.5)    # copper frame; leaves ≥2.2mm clearance
 PRINTED_SLOT_HALF = np.deg2rad(15.0)     # slot centre = boundary to the next cell
 PRINTED_END_BAND = 0.0035                # coil bridge axial thickness beyond the stack
 
@@ -301,12 +301,13 @@ class PrintedCoilNetlist(CoilNetlist):
     """Concentrated 12s10p winding for the printed stator: one coil per tooth.
 
     Electrical topology (the classic 12-slot 10-pole concentrated winding,
-    winding factor 0.933): every tooth carries ONE printed coil loop whose
+    winding factor 0.933): every tooth carries ONE printed coil whose
     two sides occupy the HALF-SLOTS flanking it, so all coil sides sit at
     the same radii and the three phases are geometrically IDENTICAL -- the
     radial-layer asymmetry of the distributed winding dies here.  Each coil
-    is an independent printed loop (hollow conductor with an internal
-    cooling channel); the four coils of a phase are wired externally.
+    is a continuous serpentine conductor that snakes through all n_bands
+    turns with crossovers at the bottom end-turn; the four coils of a
+    phase are wired externally in series.
 
     Phase/sign table per tooth n (standard 60-degree-belt rule, identical
     to ``CoilNetlist`` for 12s10p):  A+ B+ B- C- C+ A+ A- B- B+ C+ C- A-.
@@ -324,16 +325,11 @@ class PrintedCoilNetlist(CoilNetlist):
         ]
 
     def expected_phase_components(self) -> np.ndarray:
-        """Four independent printed loops per phase (externally wired).
+        """One continuous serpentine conductor per tooth = 4 per phase.
 
-        Each tooth has one printed coil loop (coil_span=1, n_layers=1,
-        turns_per_coil=1 in the P4 frame topology).  The P5 swept-band
-        design carries ``n_turns_per_cell`` independent closed loops per
-        tooth (7 bands); when the centerline registry is present the
-        expected count is multiplied by the turn count (28 per phase, not
-        4).  Real jumpers between bands are not yet modelled in the
-        geometry — the impressed line-current source treats all turns as
-        carrying the same ``I`` in the same direction (series).
+        Each tooth's n_bands turns are now a single continuous path
+        (serpentine with crossovers), so the expected number of copper
+        connected components per phase is 4 (one per tooth).
         """
         per_phase = self.n_slots // self.n_phases
         return np.full(self.n_phases, per_phase, dtype=np.int32)

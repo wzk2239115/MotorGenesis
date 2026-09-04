@@ -1397,41 +1397,76 @@ class StructuralContinuity:
 # ---------------------------------------------------------------------------
 
 
-def _band_centerline(
-    r_k: float,
-    amp_k: float,
+def _serpentine_centerline(
+    r_k: np.ndarray,
+    amp: np.ndarray,
     side_angle: float,
     zc: float,
-    n_arch: int = 10,
-) -> np.ndarray:
-    """Centreline polyline for one swept copper band around a tooth.
+    n_arch: int = 8,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One continuous serpentine conductor through all bands of a tooth.
 
-    A closed loop in the ``(theta, z)`` plane at constant radius ``r_k``:
-    two axial sides at ``theta = +/- side_angle`` (the slot sides) joined
-    by raised-cosine arches above and below the stack.  The cosine gives
-    a smooth (C1) tangent at the junctions — no kink, no stress
-    concentration, and a self-supporting overhang angle everywhere.
+    Instead of ``n_bands`` independent closed loops, this produces ONE
+    continuous path that snakes through every band.  The key constraint:
+    the current direction must be the SAME in every band so the MMF adds
+    constructively (all bands push flux the same way through the tooth).
 
-    ``amp_k`` grows with ``r_k`` so outer bands arch higher than inner
-    ones: the stacked bands form a dome whose apex is the outermost band.
+    Topology per band (all identical direction):
+        up side A (-theta) → arch over top → down side B (+theta) →
+        arch under bottom → back to side A
+
+    Between bands: crossover at side A (bottom) from band k to band k+1.
+    The crossover is a short radial bridge at z = -zc.
+
+        terminal → band 0 (full loop) → crossover →
+        band 1 (full loop, same direction) → crossover → ...
+        → exit terminal
+
+    Returns ``(points, tangents, segment_turns)`` where ``segment_turns``
+    maps each point to its turn index (0..n_bands-1).
     """
-    ca, sa = np.cos(side_angle), np.sin(side_angle)
-    thetas = np.linspace(-side_angle, side_angle, n_arch)
-    cos_profile = (1.0 + np.cos(np.pi * thetas / side_angle)) * 0.5
+    n_bands = len(r_k)
+    all_pts = []
+    turn_map = []
 
-    pts = [
-        [r_k * ca, -r_k * sa, -zc],   # side A bottom
-        [r_k * ca, -r_k * sa,  zc],   # side A top
-    ]
-    for th, c in zip(thetas, cos_profile):
-        pts.append([r_k * np.cos(th), r_k * np.sin(th), zc + amp_k * c])
+    for k in range(n_bands):
+        r = r_k[k]
+        a = amp[k]
+        ca, sa = np.cos(side_angle), np.sin(side_angle)
+        thetas = np.linspace(-side_angle, side_angle, n_arch)
+        cos_profile = (1.0 + np.cos(np.pi * thetas / side_angle)) * 0.5
 
-    pts.append([r_k * ca,  r_k * sa,  zc])    # side B top
-    pts.append([r_k * ca,  r_k * sa, -zc])    # side B bottom
-    for th, c in zip(reversed(thetas), reversed(cos_profile)):
-        pts.append([r_k * np.cos(th), r_k * np.sin(th), -(zc + amp_k * c)])
+        # Same direction for every band:
+        # side A (-) bottom → side A (-) top → arch top → side B (+) top →
+        # side B (+) bottom → arch bottom → back to side A (-) bottom
+        pts = [[r * ca, -r * sa, -zc]]
+        pts.append([r * ca, -r * sa, zc])
+        for th, c in zip(thetas, cos_profile):
+            pts.append([r * np.cos(th), r * np.sin(th), zc + a * c])
+        pts.append([r * ca, r * sa, zc])
+        pts.append([r * ca, r * sa, -zc])
+        for th, c in zip(reversed(thetas), reversed(cos_profile)):
+            pts.append([r * np.cos(th), r * np.sin(th), -(zc + a * c)])
 
-    return np.array(pts, dtype=np.float64)
+        if k > 0:
+            # Crossover: from end of band k-1 (side A bottom) to start of
+            # band k (side A bottom).  Both are at z ≈ -zc, different radii.
+            prev_end = all_pts[-1]
+            curr_start = pts[0]
+            n_cross = 3
+            for j in range(1, n_cross):
+                s = j / n_cross
+                cx = prev_end[0] + s * (curr_start[0] - prev_end[0])
+                cy = prev_end[1] + s * (curr_start[1] - prev_end[1])
+                cz = prev_end[2] + s * (curr_start[2] - prev_end[2])
+                all_pts.append([cx, cy, cz])
+                turn_map.append(k - 1)
+
+        for p in pts:
+            all_pts.append(p)
+            turn_map.append(k)
+
+    return np.array(all_pts, dtype=np.float64), np.array(turn_map, dtype=np.int32)
 
 
 @dataclass
@@ -1456,8 +1491,8 @@ class StatorCell:
     cfg: MotorConfig3D
     tooth_index: int = 0
     n_bands: int = 7
-    band_radius: float = 0.0007
-    channel_wall: float = 0.0004
+    band_radius: float = 0.0005
+    channel_wall: float = 0.0003
     arch_base: float = 0.002
     arch_slope: float = 1.0
     clad_thickness: float = 0.0003
@@ -1495,10 +1530,11 @@ class StatorCell:
         )
         tooth_dz = np.abs(Z - cz) - (zh + self.tooth_tip_dome)
         tooth = np.maximum(tooth_body, tooth_dz)
-        # local yoke arc (one cell pitch)
+        # local yoke arc (HALF slot pitch — not full, which made a
+        # monolithic ring that hides the cell structure)
         yoke = np.maximum(
             np.maximum(r - cfg.R_design, cfg.R_winding_outer - r),
-            np.abs(d_ang) - (np.pi / 6.0),
+            np.abs(d_ang) - (np.pi / 12.0),
         )
         yoke = np.maximum(yoke, np.abs(Z - cz) - zh)
         iron = np.minimum(tooth, yoke).astype(np.float32)
@@ -1521,31 +1557,19 @@ class StatorCell:
         phase, polarity = table[self.tooth_index]
         cross_area = np.pi * self.band_radius ** 2
 
-        copper_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
-        phase_sdf = np.full(cfg.shape, 1e9, dtype=np.float32)
-        for k in range(self.n_bands):
-            pts = _band_centerline(r_k[k], amp[k], PRINTED_FRAME_HALF, zc)
-            # rotate to tooth position
-            rot = th0
-            ca, sa = np.cos(rot), np.sin(rot)
-            pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
-            band = polyline_capsule_sdf(cfg.shape, cfg.spacing, cfg.origin,
-                                        pts, self.band_radius, grid=grid)
-            copper_sdf = np.minimum(copper_sdf, band)
-            phase_sdf = np.minimum(phase_sdf, band)
+        # Single continuous serpentine through all n_bands with crossovers
+        pts, turn_map = _serpentine_centerline(
+            r_k, amp, PRINTED_FRAME_HALF, zc, n_arch=8)
+        # rotate to tooth position
+        ca, sa = np.cos(th0), np.sin(th0)
+        pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
 
-            # Register centerline as source of truth for line-current deposition
-            mf.metadata.setdefault("centerline_registry", []).append({
-                "points": pts.copy(),
-                "phase": phase,
-                "polarity": polarity,
-                "turn": k,
-                "tooth": self.tooth_index,
-                "cross_section_area": float(cross_area),
-                "band_radius": float(self.band_radius),
-            })
+        copper_sdf = polyline_capsule_sdf(
+            cfg.shape, cfg.spacing, cfg.origin, pts,
+            self.band_radius, grid=grid)
 
-        mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing, origin=cfg.origin),
+        mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing,
+                             origin=cfg.origin),
                "copper", priority=True)
 
         # accumulate phase SDF for the whole stator (multi-call safe)
@@ -1554,8 +1578,22 @@ class StatorCell:
             mf.metadata["winding_phase_sdf"] = np.full(
                 (3,) + cfg.shape, 1e9, dtype=np.float32)
         ps = mf.metadata["winding_phase_sdf"]
-        ps[phase] = np.minimum(ps[phase], phase_sdf)
+        ps[phase] = np.minimum(ps[phase], copper_sdf)
         mf.metadata["winding_phase_sdf"] = ps
+
+        # Register ONE centerline entry per tooth (the continuous path),
+        # tagged with turn indices via turn_map.  The line-current depositor
+        # will split this into per-turn segments.
+        mf.metadata.setdefault("centerline_registry", []).append({
+            "points": pts.copy(),
+            "turn_map": turn_map.copy(),
+            "phase": phase,
+            "polarity": polarity,
+            "n_turns": self.n_bands,
+            "tooth": self.tooth_index,
+            "cross_section_area": float(cross_area),
+            "band_radius": float(self.band_radius),
+        })
         return mf
 
     def build_insulation(self, mf: MaterialField) -> MaterialField:
@@ -1665,8 +1703,8 @@ class StatorCellArray:
 
     cfg: MotorConfig3D
     n_bands: int = 7
-    band_radius: float = 0.0007
-    channel_wall: float = 0.0004
+    band_radius: float = 0.0005
+    channel_wall: float = 0.0003
     arch_base: float = 0.002
     arch_slope: float = 1.0
     clad_thickness: float = 0.0003

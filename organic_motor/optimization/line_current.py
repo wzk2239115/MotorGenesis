@@ -235,16 +235,15 @@ def _smooth_axis(arr: np.ndarray, axis: int) -> np.ndarray:
 def centerline_resistance(registry: list[dict], rho_e: float = 1.68e-8) -> dict:
     """Analytical resistance from centerline geometry.
 
-    For each turn (closed loop), R = rho_e * L / A where L is the loop
-    length and A is the cross-section area.  Per-cell R = sum of 7 turns
-    (series).  Per-phase R = sum of 4 cells (series).
+    For the serpentine format: each registry entry is ONE continuous
+    path through all n_bands turns of a tooth.  The total length is the
+    polyline length, and R = rho_e * L / A gives the cell resistance
+    (all turns in series).  Per-phase R = sum of 4 cells (series).
 
-    Returns dict with per-turn, per-cell, per-phase resistance and total
-    copper loss at unit current.
+    Returns dict with per-cell, per-phase resistance.
     """
     from collections import defaultdict
 
-    turn_R = defaultdict(list)
     cell_R = defaultdict(list)
 
     for entry in registry:
@@ -258,24 +257,20 @@ def centerline_resistance(registry: list[dict], rho_e: float = 1.68e-8) -> dict:
             d = pts[seg + 1] - pts[seg]
             L += float(np.sqrt(d @ d))
         R = rho_e * L / A
-        turn_R[(phase, tooth)].append(R)
-
-    # Per-cell: sum of turns (series)
-    for (phase, tooth), Rs in turn_R.items():
-        cell_R[phase].append(sum(Rs))
+        cell_R[phase].append(R)
 
     per_phase_R = {}
     for phase, Rs in cell_R.items():
         per_phase_R[phase] = sum(Rs)  # 4 cells in series
 
     total_R = sum(per_phase_R.values()) / 3.0  # average per phase
+    n_turns = sum(e.get("n_turns", 7) for e in registry)
     return {
-        "per_turn_R": dict(turn_R),
-        "per_cell_R": {k: sum(v) for k, v in cell_R.items()},
+        "per_cell_R": dict(cell_R),
         "per_phase_R": per_phase_R,
         "avg_phase_R": total_R,
-        "n_turns": len(registry),
-        "n_cells": len(set((e["tooth"], e["phase"]) for e in registry)),
+        "n_turns_total": n_turns,
+        "n_cells": len(registry),
     }
 
 
@@ -328,3 +323,71 @@ def hodge_project(J: np.ndarray, cfg: MotorConfig3D,
     J_proj[:, :, 1:-1, 2] -= (phi[:, :, 2:] - phi[:, :, :-2]) / (2 * dz)
 
     return J_proj
+
+
+def _deposit_joule_heat(
+    cfg: MotorConfig3D,
+    registry: list[dict],
+    I_per_turn: float,
+    amps: np.ndarray,
+) -> np.ndarray:
+    """Analytical copper loss I²ρL/A deposited as heat along centreline.
+
+    For each centreline segment, the power dissipated is::
+
+        P_seg = I² * ρ * L_seg / A
+
+    where ``I`` is the phase current times the polarity, ``ρ`` is the
+    copper resistivity, ``L_seg`` is the segment length, and ``A`` is
+    the cross-section area.  This is grid-independent and exact for the
+    printed conductor topology.
+
+    The power is deposited into the nearest coarse cell (no spreading
+    needed — heat diffusion smooths it on the thermal grid).
+
+    Returns a 3-D array of volumetric heat density [W/m³].
+    """
+    rho_e = 1.0 / cfg.sigma_copper
+    nx, ny, nz = cfg.shape
+    q = np.zeros(cfg.shape, dtype=np.float32)
+    cell_vol = cfg.cell_volume
+
+    for entry in registry:
+        pts = entry["points"]
+        phase = entry["phase"]
+        polarity = entry["polarity"]
+        A = entry["cross_section_area"]
+        turn_map = entry.get("turn_map")
+        I_phase = float(amps[phase]) * polarity * I_per_turn
+
+        if turn_map is not None:
+            # Serpentine: single continuous path, all turns in series
+            # carry the same current
+            for seg in range(len(pts) - 1):
+                d = pts[seg + 1] - pts[seg]
+                L_seg = float(np.sqrt(d @ d))
+                P_seg = I_phase ** 2 * rho_e * L_seg / A
+                # Deposit at midpoint
+                mid = 0.5 * (pts[seg] + pts[seg + 1])
+                idx = ((mid - cfg.origin) / cfg.spacing).astype(int)
+                i = np.clip(idx[0], 0, nx - 1)
+                j = np.clip(idx[1], 0, ny - 1)
+                k = np.clip(idx[2], 0, nz - 1)
+                q[i, j, k] += P_seg / cell_vol
+        else:
+            # Legacy: independent closed loops per turn
+            n_pts = len(pts)
+            for seg in range(n_pts):
+                p0 = pts[seg]
+                p1 = pts[(seg + 1) % n_pts]
+                d = p1 - p0
+                L_seg = float(np.sqrt(d @ d))
+                P_seg = I_phase ** 2 * rho_e * L_seg / A
+                mid = 0.5 * (p0 + p1)
+                idx = ((mid - cfg.origin) / cfg.spacing).astype(int)
+                i = np.clip(idx[0], 0, nx - 1)
+                j = np.clip(idx[1], 0, ny - 1)
+                k = np.clip(idx[2], 0, nz - 1)
+                q[i, j, k] += P_seg / cell_vol
+
+    return q

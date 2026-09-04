@@ -99,17 +99,20 @@ def extract_electrical_parameters(
     if centerline_registry:
         from organic_motor.optimization.line_current import centerline_resistance
         R_info = centerline_resistance(centerline_registry)
-        n_bands = len(set(e["turn"] for e in centerline_registry))
+        # Serpentine: 12 entries (one per tooth), each with n_turns
+        n_bands = centerline_registry[0].get("n_turns", 7)
         n_turns_total = n_bands * (netlist.n_slots // netlist.n_phases)
         phase_resistance = R_info["avg_phase_R"]
         # Analytical mean path from centerline lengths
         total_L = 0.0
+        n_total_turns = 0
         for entry in centerline_registry:
             pts = entry["points"]
             for seg in range(len(pts) - 1):
                 d = pts[seg + 1] - pts[seg]
                 total_L += float(np.sqrt(d @ d))
-        mean_path = total_L / max(n_turns_total, 1)
+            n_total_turns += entry.get("n_turns", n_bands)
+        mean_path = total_L / max(n_total_turns, 1)
         wire_area = centerline_registry[0]["cross_section_area"]
         copper_vol = total_L * wire_area
     else:

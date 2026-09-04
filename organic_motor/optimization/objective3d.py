@@ -485,18 +485,15 @@ def _forward3d_core(
         rho_iron, rho_pm, M = _rotated_materials(fields, magnetization, angle, cfg)
         nu = reluctivity3d(rho_iron, rho_pm, cfg)
         electrical_angle = cfg.pole_pairs * angle + cfg.electrical_phase_offset
-        if cfg.excitation_mode == "terminal":
-            J, phase_current, q_cu, electric_residual, phase_balance = (
-                three_phase_terminal_conduction3d(
-                    fields.rho_copper, electrical_angle, cfg, phase_belts_override,
-                )
-            )
-        elif centerline_registry is not None:
+        if centerline_registry is not None:
             # P5 hybrid dimension: deposit line currents from 3-D centreline
             # polylines directly onto the coarse grid.  The current path
             # follows the actual swept bands, not the planar P4 belts.
+            # This takes PRIORITY over terminal mode — the centreline IS
+            # the electrical source of truth for printed windings.
             from organic_motor.optimization.line_current import (
                 deposit_centerline_currents,
+                centerline_resistance,
             )
             import numpy as _np
             if phase_amplitudes is not None:
@@ -513,17 +510,17 @@ def _forward3d_core(
             )
             J = jnp.asarray(J_np)
             phase_current = jnp.asarray(phase_J_np)
-            # Joule heat from deposited J^2 / sigma
-            conductor = jnp.broadcast_to(
-                jnp.mean(fields.rho_copper, axis=2, keepdims=True), cfg.shape
+            # Analytical copper loss: I²ρL/A deposited along centreline
+            # (NOT J²/σ on coarse grid — that is grid-dependent)
+            from organic_motor.optimization.line_current import \
+                _deposit_joule_heat
+            q_cu_np = _deposit_joule_heat(
+                cfg, centerline_registry, I_per_turn, amps,
             )
-            q_cu = jnp.sum(jnp.sum(phase_current ** 2, axis=0), axis=-1) / (
-                cfg.sigma_copper * (conductor + 1e-6)
-            )
-            q_cu = jnp.where(conductor > 1e-6, q_cu, 0.0)
+            q_cu = jnp.asarray(q_cu_np)
             electric_residual = jnp.asarray(0.0, dtype=q_cu.dtype)
             _, phase_balance = _source_residuals(phase_current, cfg, phase_belts_override)
-        else:
+        elif cfg.excitation_mode == "terminal":
             jz, phase_jz = three_phase_impressed_source3d(
                 fields.rho_copper, electrical_angle, cfg, phase_belts_override,
                 phase_amplitudes,

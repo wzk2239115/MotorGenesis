@@ -117,14 +117,16 @@ def verify_phase_connectivity(
                                  for p in phase_names]
 
     expected = netlist.expected_phase_components()
-    # P5 swept-band: multiply expected by n_turns_per_cell (7 bands = 7
-    # independent closed loops per tooth, not yet jumpered in series).
-    n_turns = 1
+    # P5 serpentine: one continuous path per tooth (all turns in series),
+    # so expected = 1 component per tooth = 4 per phase.
+    # (Legacy format had n_turns independent loops per tooth.)
     if hasattr(mf, "metadata"):
         reg = mf.metadata.get("centerline_registry")
-        if reg:
+        if reg and "turn_map" in reg[0]:
+            pass  # serpentine: 1 path per tooth, expected stays [4,4,4]
+        elif reg:
             n_turns = len(set(e["turn"] for e in reg))
-    expected = expected * n_turns
+            expected = expected * n_turns
     result["expected_components"] = [int(e) for e in expected]
     # Insulation must be resolvable: min_gap is a voxel-CENTRE distance, so
     # phases separated by less than ~one cell measure at ~1 cell -- a true
