@@ -1497,12 +1497,22 @@ class StatorCell:
     arch_slope: float = 1.0
     clad_thickness: float = 0.0003
     tooth_tip_dome: float = 0.0015
+    overhang_max_deg: float = 40.0  # AM self-supporting limit
 
     def _band_radii(self, cfg: MotorConfig3D) -> tuple[np.ndarray, np.ndarray]:
+        from organic_motor.construct.winding_netlist import PRINTED_FRAME_HALF
         r_wi = cfg.R_winding_inner
         r_wo = cfg.R_winding_outer - 0.0005
         r_k = np.linspace(r_wi + 0.0003, r_wo - 0.0003, self.n_bands)
         amp = self.arch_base + (r_k - r_wi) * self.arch_slope
+        # AM constraint: cap amplitude so overhang angle <= overhang_max_deg
+        # overhang = atan(amp / (arch_span/2)), so
+        # max_amp = (arch_span/2) * tan(overhang_max)
+        tan_max = np.tan(np.deg2rad(self.overhang_max_deg))
+        for i in range(len(r_k)):
+            arch_span = 2.0 * r_k[i] * np.sin(PRINTED_FRAME_HALF)
+            max_amp = (arch_span * 0.5) * tan_max
+            amp[i] = min(amp[i], max_amp)
         return r_k, amp
 
     def _theta0(self) -> float:
@@ -1530,11 +1540,17 @@ class StatorCell:
         )
         tooth_dz = np.abs(Z - cz) - (zh + self.tooth_tip_dome)
         tooth = np.maximum(tooth_body, tooth_dz)
-        # local yoke arc (HALF slot pitch — not full, which made a
-        # monolithic ring that hides the cell structure)
+        # local yoke arc with flux-driven thickness:
+        # thicker at tooth center (flux concentrates), thinner at slot
+        # center (flux splits).  Angular span < slot pitch creates visible
+        # inter-cell gaps (the LEAP "petal" look, not a monolithic ring).
+        yoke_ang = np.pi / 13.0  # slightly less than half slot pitch
+        # Thickness modulation: full at tooth, 60% at slot boundary
+        yoke_thick_mod = 0.6 + 0.4 * np.cos(d_ang * (np.pi / yoke_ang))
+        r_outer = cfg.R_winding_outer + (cfg.R_design - cfg.R_winding_outer) * yoke_thick_mod
         yoke = np.maximum(
-            np.maximum(r - cfg.R_design, cfg.R_winding_outer - r),
-            np.abs(d_ang) - (np.pi / 12.0),
+            np.maximum(r - r_outer, cfg.R_winding_outer - r),
+            np.abs(d_ang) - yoke_ang,
         )
         yoke = np.maximum(yoke, np.abs(Z - cz) - zh)
         iron = np.minimum(tooth, yoke).astype(np.float32)
@@ -1543,7 +1559,7 @@ class StatorCell:
         return mf
 
     def build_copper(self, mf: MaterialField, grid=None) -> MaterialField:
-        from organic_motor.construct.field import polyline_capsule_sdf
+        from organic_motor.construct.field import polyline_ribbon_sdf
         from organic_motor.construct.winding_netlist import (
             PRINTED_FRAME_HALF, printed_netlist,
         )
@@ -1555,7 +1571,10 @@ class StatorCell:
         r_k, amp = self._band_radii(cfg)
         table = {t: (ph, pol) for t, ph, pol in netlist.coil_table()}
         phase, polarity = table[self.tooth_index]
-        cross_area = np.pi * self.band_radius ** 2
+        # Flat band cross-section: thin radially, wide tangentially
+        band_width = 2.0 * self.band_radius  # e.g. 1.0mm wide
+        band_thickness = self.band_radius  # e.g. 0.5mm thick
+        cross_area = band_width * band_thickness  # rectangular approx
 
         # Single continuous serpentine through all n_bands with crossovers
         pts, turn_map = _serpentine_centerline(
@@ -1564,9 +1583,9 @@ class StatorCell:
         ca, sa = np.cos(th0), np.sin(th0)
         pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
 
-        copper_sdf = polyline_capsule_sdf(
+        copper_sdf = polyline_ribbon_sdf(
             cfg.shape, cfg.spacing, cfg.origin, pts,
-            self.band_radius, grid=grid)
+            band_width, band_thickness, grid=grid)
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing,
                              origin=cfg.origin),
@@ -1592,7 +1611,7 @@ class StatorCell:
             "n_turns": self.n_bands,
             "tooth": self.tooth_index,
             "cross_section_area": float(cross_area),
-            "band_radius": float(self.band_radius),
+            "band_radius": float(band_thickness),
         })
         return mf
 

@@ -70,9 +70,62 @@ def load_constructed_checkpoint(
     return jnp.asarray(logits), jnp.asarray(rotor_logits), jnp.asarray(magnetization), meta
 
 
+def extract_fea_flux_linkage(
+    mf, cfg: MotorConfig3D, magnetization_raw=None,
+) -> float:
+    """Run a PM-only Maxwell solve (zero current) and extract the real
+    air-gap flux density, then compute flux linkage.
+
+    Returns flux_linkage [Wb] from the actual FEA field, not a 1 T default.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+    from organic_motor.construct.realize import realize
+    from organic_motor.optimization.objective3d import forward3d_fields
+
+    fields, mag = realize(mf, cfg, magnetization_raw)
+    # PM-only: zero current (phase_amplitudes = 0)
+    result = forward3d_fields(
+        cfg, fields, mag, angles=[0.0],
+        phase_amplitudes=jnp.zeros(3),
+        centerline_registry=mf.metadata.get("centerline_registry"),
+    )
+    B = np.asarray(result.flux_density)  # (nx, ny, nz, 3)
+
+    # Air gap region: between rotor outer and stator inner, midplane z
+    nx, ny, nz = cfg.shape
+    dx, dy, dz = cfg.spacing
+    ox, oy, oz = cfg.origin
+    x = ox + dx * np.arange(nx)
+    y = oy + dy * np.arange(ny)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    r = np.sqrt(X**2 + Y**2)
+    cz = cfg.center[2]
+    kz = int(round((cz - oz) / dz))
+    gap = (r >= cfg.R_rotor + cfg.pole_pairs * 0 and r <= cfg.R_stator_inner) if hasattr(cfg, 'R_rotor') else (r >= 0.0275) & (r <= 0.0305)
+    if not gap.any():
+        gap = (r >= 0.027) & (r <= 0.031)
+    Bz_gap = B[:, :, kz, 2]
+    b_gap_mean = float(np.mean(np.abs(Bz_gap[gap]))) if gap.any() else 0.0
+
+    from organic_motor.construct.winding_netlist import CoilNetlist
+    netlist = mf.metadata.get("winding_netlist") if hasattr(mf, "metadata") else None
+    if not isinstance(netlist, CoilNetlist):
+        netlist = CoilNetlist(n_slots=12, pole_pairs=cfg.pole_pairs)
+
+    reg = mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
+    n_bands = reg[0].get("n_turns", 7) if reg else netlist.turns_per_coil
+    n_turns = n_bands * (netlist.n_slots // netlist.n_phases)
+    kw = 0.933  # 12s10p winding factor
+    A_pole = cfg.stack_length * cfg.R_stator_inner * np.pi / max(2 * cfg.pole_pairs, 1)
+    flux_linkage = kw * b_gap_mean * A_pole * n_turns
+    return flux_linkage
+
+
 def extract_electrical_parameters(
     mf: MaterialField, cfg: MotorConfig3D,
-    b_gap_mean: float = 1.0,
+    b_gap_mean: float = 0.0,
+    flux_linkage_fea: float | None = None,
 ) -> ElectricalParameters:
     """Compute per-phase R, L, flux linkage from actual geometry.
 
@@ -132,14 +185,24 @@ def extract_electrical_parameters(
     stack_len = cfg.stack_length
     mu0 = cfg.mu0
     mu_r = cfg.mu_r_iron
-    iron_vol = float(np.sum(iron)) * cfg.cell_volume
-    l_eff = stack_len
-    A_eff = iron_vol / max(l_eff, 1e-9)
-    phase_inductance = n_turns_total ** 2 * mu0 * mu_r * A_eff / max(l_eff, 1e-9) * 1e-3
-
-    kw = 0.9
+    # Magnetizing inductance from real air-gap geometry:
+    # L_m = N² * μ₀ * μr * A_pole / (2 * g_eff)
+    # g_eff = air_gap + h_pm / μr_pm (PM thickness adds to effective gap)
+    g_air = cfg.R_stator_inner - cfg.R_rotor_outer if hasattr(cfg, 'R_rotor_outer') else 0.003
+    h_pm = cfg.R_pm_outer - cfg.R_pm_inner if hasattr(cfg, 'R_pm_outer') else 0.004
+    mu_r_pm = 1.05
+    g_eff = g_air + h_pm / mu_r_pm
     A_pole = stack_len * cfg.R_stator_inner * np.pi / max(2 * cfg.pole_pairs, 1)
-    flux_linkage = kw * b_gap_mean * A_pole * n_turns_total
+    phase_inductance = n_turns_total ** 2 * mu0 * mu_r * A_pole / max(2 * g_eff, 1e-6)
+
+    kw = 0.933  # 12s10p concentrated winding factor
+    if flux_linkage_fea is not None:
+        flux_linkage = flux_linkage_fea
+    elif b_gap_mean > 0:
+        flux_linkage = kw * b_gap_mean * A_pole * n_turns_total
+    else:
+        # No FEA value available; default to 0 (caller must supply FEA)
+        flux_linkage = 0.0
 
     return ElectricalParameters(
         phase_resistance=phase_resistance,

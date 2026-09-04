@@ -327,6 +327,121 @@ def polyline_capsule_sdf(
     return sdf
 
 
+def polyline_ribbon_sdf(
+    shape: tuple[int, int, int],
+    spacing: tuple[float, float, float],
+    origin: tuple[float, float, float],
+    points: np.ndarray,
+    width: float,
+    thickness: float,
+    grid: tuple | None = None,
+) -> np.ndarray:
+    """SDF of a flat-band (elliptical cross-section) tube swept along a
+    3-D centreline.
+
+    Unlike :func:`polyline_capsule_sdf` (circular cross-section), this
+    produces a RIBBON: thin in the radial direction (``thickness``) and
+    wide in the direction perpendicular to the path tangent and the
+    motor radial direction (``width``).  This is the LEAP 71 "flat band"
+    look — copper follows the flux path as a thin sheet, not a round
+    wire.
+
+    The radial direction at each point is ``(x, y, 0) / |(x, y, 0)|``
+    (pointing outward from the motor z-axis).  The width direction is
+    ``cross(tangent, radial)``.
+
+    For segments near the motor axis (r ≈ 0) the radial direction is
+    undefined and the function falls back to a circular cross-section.
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] < 2:
+        raise ValueError("points must be (N, 3) with N >= 2")
+
+    if grid is not None:
+        X, Y, Z = grid
+    else:
+        nx, ny, nz = shape
+        ox, oy, oz = origin
+        dx, dy, dz = spacing
+        x = ox + dx * np.arange(nx, dtype=np.float32)
+        y = oy + dy * np.arange(ny, dtype=np.float32)
+        z = oz + dz * np.arange(nz, dtype=np.float32)
+        X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
+
+    sdf = np.full(shape, 1e9, dtype=np.float32)
+    ox, oy, oz = origin
+    dx, dy, dz = spacing
+    r_max = max(width, thickness) * 0.5  # half-extent for bbox
+    hw, ht = width * 0.5, thickness * 0.5
+    r_cap = max(hw, ht)  # cap radius for smooth end
+
+    for i in range(pts.shape[0] - 1):
+        p1 = pts[i]
+        p2 = pts[i + 1]
+        d = p2 - p1
+        L2 = float(d @ d)
+        if L2 < 1e-18:
+            continue
+        d_hat = d / np.sqrt(L2)
+        # Bounding box
+        i0 = max(0, int((min(p1[0], p2[0]) - r_cap - ox) / dx) - 1)
+        i1 = min(shape[0], int((max(p1[0], p2[0]) + r_cap - ox) / dx) + 2)
+        j0 = max(0, int((min(p1[1], p2[1]) - r_cap - oy) / dy) - 1)
+        j1 = min(shape[1], int((max(p1[1], p2[1]) + r_cap - oy) / dy) + 2)
+        k0 = max(0, int((min(p1[2], p2[2]) - r_cap - oz) / dz) - 1)
+        k1 = min(shape[2], int((max(p1[2], p2[2]) + r_cap - oz) / dz) + 2)
+        if i0 >= i1 or j0 >= j1 or k0 >= k1:
+            continue
+        Xs = X[i0:i1, j0:j1, k0:k1]
+        Ys = Y[i0:i1, j0:j1, k0:k1]
+        Zs = Z[i0:i1, j0:j1, k0:k1]
+        t = np.clip(((Xs - p1[0]) * d[0] + (Ys - p1[1]) * d[1] + (Zs - p1[2]) * d[2]) / L2,
+                    0.0, 1.0)
+        px = p1[0] + t * d[0]
+        py = p1[1] + t * d[1]
+        pz = p1[2] + t * d[2]
+        disp_x = Xs - px
+        disp_y = Ys - py
+        disp_z = Zs - pz
+        dist_3d = np.sqrt(disp_x ** 2 + disp_y ** 2 + disp_z ** 2)
+
+        # Radial direction at the closest point on the segment
+        r_xy = np.sqrt(px ** 2 + py ** 2)
+        near_axis = r_xy < 1e-6
+        at_end = (t <= 0) | (t >= 1)  # projection at segment endpoint
+
+        if np.all(near_axis):
+            seg_sdf = (dist_3d - r_cap).astype(np.float32)
+        else:
+            r_safe = np.where(near_axis, 1.0, r_xy)
+            rx = px / r_safe
+            ry = py / r_safe
+            d_rad = disp_x * rx + disp_y * ry
+            wx = d_hat[1] * 0.0 - d_hat[2] * ry
+            wy = d_hat[2] * rx - d_hat[0] * 0.0
+            wz = d_hat[0] * ry - d_hat[1] * rx
+            w_norm = np.sqrt(wx ** 2 + wy ** 2 + wz ** 2)
+            if np.all(w_norm < 1e-10):
+                wx_f, wy_f, wz_f = 0.0, 0.0, 1.0
+            else:
+                w_safe = np.where(w_norm < 1e-10, 1.0, w_norm)
+                wx_f, wy_f, wz_f = wx / w_safe, wy / w_safe, wz / w_safe
+            d_wid = disp_x * wx_f + disp_y * wy_f + disp_z * wz_f
+            # Inside segment: 2D elliptical cross-section SDF
+            # At endpoints: 3D ellipsoidal cap (tangent component uses r_cap)
+            d_tan = disp_x * d_hat[0] + disp_y * d_hat[1] + disp_z * d_hat[2]
+            ellip_2d = np.sqrt((d_rad / ht) ** 2 + (d_wid / hw) ** 2)
+            ellip_3d = np.sqrt((d_rad / ht) ** 2 + (d_wid / hw) ** 2 + (d_tan / r_cap) ** 2)
+            seg_sdf = np.where(
+                at_end | near_axis,
+                (ellip_3d - 1.0).astype(np.float32),
+                (ellip_2d - 1.0).astype(np.float32),
+            )
+
+        sdf[i0:i1, j0:j1, k0:k1] = np.minimum(sdf[i0:i1, j0:j1, k0:k1], seg_sdf)
+    return sdf
+
+
 def sweep_tube(
     shape: tuple[int, int, int],
     spacing: tuple[float, float, float],

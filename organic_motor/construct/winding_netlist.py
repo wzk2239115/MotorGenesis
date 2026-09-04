@@ -291,7 +291,7 @@ def default_netlist(cfg: MotorConfig3D) -> CoilNetlist:
 #   +/-SLOT_HALF (= pitch/2)             cell boundary at the slot centre
 PRINTED_TOOTH_HALF = np.deg2rad(7.5)
 PRINTED_CLAD_HALF = np.deg2rad(8.44)     # tooth + 0.6mm cladding at r ~ 36.75mm
-PRINTED_FRAME_HALF = np.deg2rad(12.5)    # copper frame; leaves ≥2.2mm clearance
+PRINTED_FRAME_HALF = np.deg2rad(12.0)    # copper frame; leaves ≥2.2mm clearance
 PRINTED_SLOT_HALF = np.deg2rad(15.0)     # slot centre = boundary to the next cell
 PRINTED_END_BAND = 0.0035                # coil bridge axial thickness beyond the stack
 

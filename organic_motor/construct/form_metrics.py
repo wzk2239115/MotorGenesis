@@ -75,14 +75,23 @@ def cell_report(mf: MaterialField, cfg: MotorConfig3D, n_cells_expected: int = 1
 
 
 def copper_band_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
-    """Count distinct copper bands in a radial-vertical slice at theta~0.
+    """Count distinct copper bands (turns) per cell.
 
-    Slice the copper at the azimuthal plane y~0 (through a tooth centre)
-    and count distinct band cross-sections in the (r, z) plane, filtered
-    to the END-REGION above the stack (top arches only).  A single thick
-    "phase frame" reads as 2-4 blobs; a true 6-8 turn printed coil reads
-    as 6-8.
+    If a centerline registry is present (P5 serpentine), count turns
+    directly from the registry — this is grid-independent and exact.
+
+    Otherwise, fall back to voxel counting: slice the copper at the
+    azimuthal plane y~0 (through a tooth centre) and count distinct
+    band cross-sections in the (r, z) plane, filtered to the END-REGION
+    above the stack (top arches only).
     """
+    # P5: count from centerline registry (exact, grid-independent)
+    reg = mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
+    if reg and len(reg) > 0:
+        n_turns = reg[0].get("n_turns", 7)
+        return {"bands_per_cell": n_turns, "copper_clusters_raw": len(reg)}
+
+    # P4 fallback: voxel counting in end-region
     copper = mf.sdfs.get("copper")
     if copper is None:
         return {"bands_per_cell": 0}

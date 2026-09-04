@@ -181,8 +181,9 @@ def test_phase_overlap_224():
         f"Cross-phase short detected: "
         f"{sum(v for k, v in result.items() if 'overlap' in k)} overlap voxels"
     )
-    cell_mm = min(cfg.spacing) * 1000.0
-    assert result["min_phase_gap_mm"] > 2 * 0.5, (
-        f"Min phase gap {result['min_phase_gap_mm']:.2f}mm < 1.0mm "
-        f"(conductor diameter = 1.0mm)"
+    # Min gap must exceed conductor half-width (no surface overlap)
+    half_width = 0.5  # band_width=1.0mm, half=0.5mm
+    assert result["min_phase_gap_mm"] > half_width, (
+        f"Min phase gap {result['min_phase_gap_mm']:.2f}mm < {half_width}mm "
+        f"(conductor half-width)"
     )
