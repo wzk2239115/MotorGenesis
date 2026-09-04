@@ -377,6 +377,8 @@ def compute_powered_maps(
         # per ampere (measured: motor crawled at 0.06 rad/s from standstill).
         if getattr(cfg, "winding_style", "printed") == "printed":
             n_series = _printed_series_coils(cfg)
+            # P5: multiply by turns per cell (7 bands = 7 turns in series)
+            n_series *= max(1, getattr(cfg, "_n_turns_per_cell", 1))
             nominal[p] /= max(1, n_series)
 
     t2_diag = t_static - t0_map[None, :]  # (3, na) self I^2 coefficients

@@ -108,10 +108,12 @@ def _fine_grid_amplitudes(cfg, settings, map_angles, fine_shape):
     belts = None
     if netlist is not None:
         belts = jnp.asarray(netlist.phase_belts_3d(g))
+    centerline_registry = m.metadata.get("centerline_registry")
 
     def phase_solver(single, angle, amplitudes_arg):
         return forward3d_fields(
             g, fields, mag_g, [angle], single, phase_amplitudes=amplitudes_arg,
+            centerline_registry=centerline_registry,
         )
 
     maps = compute_powered_maps(
@@ -184,6 +186,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     motor = field_driven_motor(cfg)
     mf = motor.build()
     mag = motor.magnetization()
+
+    # P5: propagate turns-per-cell to config for nominal-current scaling
+    n_tpc = mf.metadata.get("winding_n_turns_per_cell", 1)
+    setattr(cfg, "_n_turns_per_cell", n_tpc)
 
     elec = extract_electrical_parameters(mf, cfg)
     print("[startup] electrical parameters from geometry:")

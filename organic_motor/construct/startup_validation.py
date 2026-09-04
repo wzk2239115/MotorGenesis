@@ -306,9 +306,16 @@ def validate_startup(
 
     from organic_motor.experiments.motor3d_powered import compute_powered_maps
 
+    # P5 line-current: pass centerline registry so the solver deposits
+    # currents from 3-D swept-band polylines instead of coarse rho_copper.
+    centerline_registry = None
+    if mf is not None and hasattr(mf, "metadata"):
+        centerline_registry = mf.metadata.get("centerline_registry")
+
     def phase_solver(single, angle, amplitudes):
         return forward3d_fields(
-            cfg, fields, magnetization, [angle], single, phase_amplitudes=amplitudes
+            cfg, fields, magnetization, [angle], single, phase_amplitudes=amplitudes,
+            centerline_registry=centerline_registry,
         )
 
     maps = compute_powered_maps(

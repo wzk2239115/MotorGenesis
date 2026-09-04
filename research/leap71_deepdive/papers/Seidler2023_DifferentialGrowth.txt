@@ -1,0 +1,711 @@
+Dieses Dokument ist eine Zweitveröffentlichung (Verlagsversion)
+This is a self-archiving document (published version)
+
+Alexander Seidler, Stefan Holtzhausen, Maximilian Sander et al.
+
+Analysis of the Differential-Growth Method’s potential for Designing
+Complex Heat-Transferring walls for compact heat exchanger
+Erstveröffentlichung in / First published in:
+Proceedings of the Design Society. 2023, 3. S. 583-592. Cambridge University Press. ISSN: 2732527X
+DOI: https://doi.org/10.1017/pds.2023.59
+
+Diese Version ist verfügbar / This version is available on:
+https://nbn-resolving.org/urn:nbn:de:bsz:14-qucosa2-961285
+
+Dieses Werk ist lizenziert unter einer Creative Commons Namensnennung - Nicht kommerziell - Keine Bearbeitungen 4.0 International Lizenz.
+This work is licensed under a Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License.
+
+INTERNATIONAL CONFERENCE ON ENGINEERING DESIGN, ICED23
+24-28 JULY 2023, BORDEAUX, FRANCE
+
+ANALYSIS OF THE DIFFERENTIAL-GROWTH METHOD'S
+POTENTIAL FOR DESIGNING COMPLEX HEATTRANSFERRING WALLS FOR COMPACT HEAT EXCHANGER
+Seidler, Alexander;
+Holtzhausen, Stefan;
+Sander, Maximilian;
+Paetzold-Byhain, Kristin
+Technische Universität Dresden
+ABSTRACT
+Water scarcity and resource depletion can be expected during the climate crisis. Therefore, thermally
+loaded processes in particular, must be made more efficient in the future. Heat exchangers will play a
+key role in this optimization process. More efficient designs allow a greater heat flow to be removed
+from processes while mass flows remain constant. In this context, the heat-transferring wall of heat
+exchangers is a focus of current research on the design of heat exchangers. The aim is to increase the
+heat-transferring surface of the wall as much as possible and to keep the design space as compact as
+possible. Therefore, this study investigates the suitability of the differential-growth method for
+generating complex heat-transferring walls for heat exchangers using CFD-analysis. Firstly, a
+framework for generating the wall structures and a computational model for predicting the design
+influence of such structures for the thermal and fluid-dynamic behavior of the heat exchanger are
+presented. Thereby, the potential of such wall structures is analyzed in this study. Furthermore, the study
+identified weaknesses of such walls designed with the differential-growth method, which should be the
+focus of future investigations.
+Keywords: Computational design methods, Design for Additive Manufacturing (DfAM), Simulation
+Contact:
+Seidler, Alexander
+Technische Universität Dresden
+Germany
+alexander.seidler@tu-dresden.de
+
+Cite this article: Seidler, A., Holtzhausen, S., Sander, M., Paetzold-Byhain, K. (2023) ‘Analysis of the DifferentialGrowth Method’s Potential for Designing Complex Heat-Transferring Walls for Compact Heat Exchanger’, in
+Proceedings of the International Conference on Engineering Design (ICED23), Bordeaux, France, 24-28 July 2023.
+DOI:10.1017/pds.2023.59
+
+ICED23
+ICED
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+583
+
+1
+
+INTRODUCTION
+
+Water scarcity and resource depletion can be expected during the climate crisis. Therefore, thermally
+polluted processes in particular, must be designed more efficiently in the future. Heat exchangers will
+play a key role in this optimization process. More efficient designs allow a greater heat flow to be
+dissipated from the processes while maintaining similar mass flows. As a result, less material is
+needed to manufacture these components and less cooling fluid is required in the process. The
+importance of heat exchangers for the climate-friendly design of technical processes was already
+addressed by Shah et al. (2000). Heat exchangers remove or supply energy from or to a system during
+this process. The exchange of thermal energy is achievable in different ways. For this purpose, the use
+of heat exchangers in the technology sector is more likely. Therefore, they are designed to separate the
+thermally relevant fluids by one or more separating walls. As a result, the heat is transferred indirectly
+between the fluids.
+For this reason, all optimization approaches in this field aim to increase the heat-transferring surface of
+the fluid-separating wall and reduce its thickness (Peng et al., 2019). However, this should be realized in
+the smallest possible space to increase the energy exchange between the different fluids. In addition, the
+thermal load on the heat-transferring partition wall also poses a challenge. Materials with a high thermal
+load capacity often show poor thermal conductivity properties while being high-cost, which results in
+further economically and thermally motivated requirements for the design (Peng et al., 2019).
+In this context, the research benefits significantly from the successes achieved in additive
+manufacturing, particularly metallic 3D printing, which means that nearly no manufacturing
+restrictions are imposed on designing new and complex wall structures (Jafari and Wits, 2018).
+Especially in the last ten years, heat exchanger design research has focused on periodic minimal surface
+models approximating triply periodic minimal surface (TPMS) models ( Peng et al., 2019; Attarzadeh et
+al., 2021; Attarzadeh et al., 2022; Li et al., 2020;). Due to their high porosity, these designs have a high
+surface area and can be manufactured without support structures and with low wall thicknesses using
+additive manufacturing. In several investigations, this heat exchanger's flow ability and suitability have
+already been examined (Peng et al., 2019; Attarzadeh et al., 2021; Attarzadeh et al., 2022; Li et al.,
+2020; Zhu et al., 2021). However, several studies have already shown that, in addition to good heat
+transfer, these structures exhibit an exponential increase in pressure drop as flow velocities increase.
+(Peng et al., 2019; Li et al., 2020; Attarzadeh et al., 2021; Attarzadeh et al., 2022; Genç et al., 2022).
+One reason for this is the higher surface area which leads to greater frictional influences on the flow
+pattern. Another is the complex geometric design leading to a turbulent behavior of the fluids and favors
+heat transfer while increasing the pressure drop because of undesirable and bad controllable fluid
+behavior. Furthermore, the supply of fluids with parallel or countercurrent principles is complicated
+since the inflow profile design for such structures is associated with an increased design effort, which is
+why realizations of these designs have so far only been solved via cross-flow principles ( Peng et al.,
+2019; Vlahinos and O'Hara, 2020). It has already been confirmed in initial experimental investigations
+that the pressure drop of these structures is very strongly dependent on the flow velocity, which means
+that their use in heat exchangers involves considerable pumping power and regulates their applicability
+for technical processes. (Genç et al., 2022).
+Of course, other approaches and algorithms also offer the potential for generating complex wall
+structures with large heat transfer surfaces. For example, digital art and geometric mathematics use
+algorithms for generating space-filling curves, according to Gotsman and Lindenbaum (1996) and
+Pedersen and Singh (2006). Based on these curves, complex wall structures with high heat-transferring
+surfaces could subsequently be developed. Yet, fractal geometries, according to Gotsman and
+Lindenbaum (1996), are geometrical shapes based on similar geometrical parts. However, such
+geometries are challenging to design and manufacture because small wall thicknesses are needed,
+which is still challenging for additive manufacturing. In addition, such structures cannot be
+approximated on every cross-section. In contrast, the approach to generate space-filling curves, the
+differential-growth method, according to Pedersen and Singh (2006) based on Gotsman and
+Lindenbaum (1996), is promising since the resulting structures are adaptable to any cross-section.
+Moreover, with these structures' growing properties, local design behavior based on flow patterns and
+temperature distribution will be conceivable soon. Therefore, the differential-growth method is
+promising for designing and analyzing suitable wall structures for heat transfer.
+
+584
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+ICED23
+
+Based on this method (Figure 2) a geometry for a cross-sectional area with a width of 40 mm and a
+height of 20 mm was generated (Figure 5). These dimensions were taken from the study published by
+Peng et al. ( 2019) to establish the comparability of the wall structure presented in this paper with a
+heat exchanger based on a gyroid wall structure. In this study, the length of the heat exchanger is 100
+mm and generated by the loft function (Figure 3). The inflow and outflow areas of the structures were
+not considered in this study in order to investigate the fully formed cross-sectional structure. The
+developed cross-section of the developed heat exchanger (gray) generated by the presented method
+(Figure 2) is shown with the hot fluid (red) and the cold fluid (blue) (Figure 5). Due to manufacturing
+constraints, the wall thickness was set to 0.7 mm rather than 0.5 mm (Peng et al., 2019) to allow
+experimental validation in the future. The surface area of the heat-transferring wall of the heat
+exchanger is 40460 mm² (0.040 m²). The cross-sectional area of the fluid regions is 252.2 mm² each.
+
+Figure 5: Cross-section of the designed heat-transferring wall (gray) of the analyzing heat
+exchanger with the hot fluid (red), and the cold fluid (blue)
+
+2.2 Numerical investigation setup
+2.2.1 Boundary conditions
+
+To evaluate the generated wall structures and ensure comparability with other approaches, a first
+assessment of the generated heat-transferring wall will be performed using computational fluid
+dynamic simulations (CFD) with the software Ansys® Academic Research Fluent 2021 R2. The
+structure will be analyzed for its flow and heat transfer properties. For comparability reasons, the
+calculation model's structure will be based on Peng et al. (2019). This section gives all information on
+physical quantities in SI units for simplified comprehensibility and replication of the model.
+Peng et al. (2019) used simplified calculation approaches for calculating and evaluating their
+investigated TPMS-approximated wall structure in the software COMSOL. These assumptions are
+primarily adopted in this calculation model presented here, too. The simplifications made here are
+used exclusively for estimating potential and not for the technical design of the heat exchangers. This
+study investigates the heat transport of a hot fluid (373.15 K) and a cold fluid (293.15 K) at a velocity
+of 0.02 m/s. The fluids are incompressible liquid water. The material of the heat exchanger is copper.
+The defined material models are listed in Table 1. A constant pressure of 0 Pa is defined at the flow
+outlet. The walls of the heat exchanger are defined as stationary with a no-slip shear condition and a
+frictionless wall boundary. The fluid-solid interface is coupled to the thermal conditions (Baker,
+2021). Since the structure studied here is also a thin wall, a simplified wall thickness of 0 m is
+assumed (Peng et al., 2019).
+Table 1: Material properties
+
+Material
+Water (20°C)
+Water (100°C)
+Copper (20°C)
+
+Density
+𝜌
+[kg/m³]
+998.00
+958.65
+8978
+
+ICED23
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+Dynamic
+viscosity 𝜂
+[kg/(m*s)]
+0.001003
+0.000282
+-
+
+Specific heat
+capacity 𝑐𝑝
+[J/(kg*K)]
+4182
+4182
+381
+
+Thermal
+conductivity 𝐾
+[W/(m*K)]
+0.6
+0.6791
+387.6
+
+587
+
+For the choice of the physical computational model, the Reynolds number (𝑅𝑒) is calculated for both
+fluids according to (4) due to different dynamic viscosities η. For this purpose, the hydraulic diameter
+(𝑑ℎ ) is calculated according to (3). As shown in Figure 2, if convergence is reached during the wall
+generation, areas of equal size are generated, resulting in the fluid cross-sectional area (𝐴𝑐𝑠 ) for the hot
+fluid (hf) and the cold fluid (cf) being equal and equal to 2.522e-4 m² (Figure 5). Therefore, the wetted
+perimeter (𝑈𝑐𝑠 ) of the cross-sectional area is 4.607e-1 m. Based on this information and the initial
+conditions that the velocity 𝑤 at the inlet is 0.02 m/s and the defined density of water (Table 1), the
+Reynolds numbers are 𝑅𝑒ℎ𝑓 = 148.6 and 𝑅𝑒𝑐𝑓 = 43.65. Thus, laminar behavior occurs in both fluid
+flows, so a laminar computational model is used.
+𝑑ℎ =
+
+4∙𝐴𝑐𝑠
+𝑈𝑐𝑠
+
+(3)
+
+𝑅𝑒 =
+
+𝑤∙𝑑ℎ ∙𝜌
+𝜂
+
+(4)
+
+2.2.2 Meshing
+
+The meshing is performed with a top-down meshing workflow. First, a fine surface mesh is created.
+Due to the complexity of the generated structure (Figure 5), characterized by multi-radial curvatures
+and freeform surfaces, a curvature size function is defined, where the maximum angle of a mesh
+element to approximate a curvature is 3 degrees. Furthermore, a growth rate of 1.1 is defined for all
+volumes for an acceptable resolution. The boundary layers of the fluids are defined by the
+dimensionless wall distance of y+ ~ 1 for good results in heat transfer. In addition, 10 elements are
+defined as boundary layers with a load ratio of 0.2 for a slow change of the aspect ratio of the
+boundary layer starting from the first cell in the wall region. Due to the minimal wall spacing in some
+cases, a mesh of polyhedral cells is used as these elements are also well suited for heat transfer
+calculations (Baker, 2021). All further information is given in Table 2.
+Table 2: Mesh parameter
+
+Parameter
+Y+
+Growth rate
+Inflation Layers\
+Boundary Layer
+Transition Ratio
+Max Cell Length
+Cell Type
+
+Hot fluid volume
+
+~1
+1.1
+10
+
+Cold fluid volume
+
+0.2
+
+Mesh size
+Cell Size
+[mm]
+Cells
+
+Min.
+8.8e-9
+
+Quality
+Skewness
+Orthogonality
+Aspect Ratio
+
+Min.
+4.5e-7
+0.2
+1.3
+
+Max.
+Ave.
+0.08 5.8e-5
+47,848,524
+Max.
+0.8
+1
+85.7
+
+Ave.
+0.03
+0.97
+5.3
+
+Min.
+1.1e-8
+Min.
+2.4e-7
+0.15
+1.3
+
+Solid region
+1.1
+3
+0.3
+
+0.8
+polyhedral
+Max.
+Ave.
+0.1
+5.6e-5
+49,433,840
+Max.
+0.85
+1
+173.7
+
+Ave.
+0.03
+0.97
+5.2
+
+Min.
+2.5e-7
+
+Max.
+Ave.
+0.1
+9.1e-5
+50,364,107
+
+Min.
+9.7e-8
+0.2
+1.3
+
+Max.
+0.8
+1
+50.7
+
+Ave.
+0.03
+0.97
+3.1
+
+The mesh quality was evaluated using three standard parameters: orthogonality, skewness, and aspect
+ratio. A minimum quality of 0.1 is defined for the orthogonality of the cells during mesh generation.
+From Table 2, it can be seen that the mesh is markedly better than 0.1 for all volumes. The worst
+orthogonality is in the mesh of the cold fluid. This can be attributed to problematic curvatures in the
+cross-section, which subsequently leads to isolated bad cells during mesh generation. However, all
+meshes show excellent cell quality concerning the average orthogonality and skewness. The aspect ratio
+varies greatly, but the average aspect ratio is at most 5.3, which is acceptable for polyhedral cell types.
+
+588
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+ICED23
+
+Furthermore, no problematic cells or cell clusters could be identified by optical cross-checking (Figure
+6). The figure shows the section of the volume cells in the cross-section along the flow direction.
+Thus, the mesh represents the wall area very well.
+
+Figure 6. Section of the mesh plot with cells of the overall geometry
+2.2.3 Simulation setup
+
+A pressure-based solver with a pressure-velocity coupling method and the coupled algorithm is chosen
+for the calculation. For this algorithm, the momentum equation and the pressure-based continuity
+equation are solved together. A robust calculation of the fluids characterizes this coupled algorithm.
+The fluid behavior is calculated steady-state since the investigation focuses primarily on the
+geometry's thermal performance. (Baker, 2021)
+Based on these solver settings, convergence criteria are defined for continuity at 1e-5 and energy at
+̅̅̅𝑥 ) (5) for cold fluid and hot
+1e-6. In addition to these quantities, the mass-weighted temperature (𝜗
+fluid at the inlet and outlet and the mass-weighted pressure (𝑝
+̅̅̅)
+𝑥 (6) and pressure drop (∆𝑝) (11) is
+further tested for convergence. Besides, the log mean temperature difference (∆𝜗𝑀 ) for parallel flow
+heat exchanger is calculated with (7). Subsequently, based on the temperature results, the heat flows
+(𝑄̇ ) of the two fluids are calculated according to (9) under the condition of (8), using the heat flow of
+the cold fluid to determine the transferred or actual heat flow. The general heat transfer coefficient (U)
+is determined using (10). Finally, for an approximate efficiency evaluation of the heat exchanger's
+transferred heat output, the heat transfer efficiency (ε) is calculated using the modified ε-NTU-method
+(12) of Roopesh Tiwari (2017). This equation considers the achievable ideal temperature difference of
+parallel heat exchangers, which the classical ε-NTU-method does not give. All equations are based on
+the quantities 𝑚̇ for the mass flow, 𝐴 for the heat-transferring surface, 𝜌𝑥 for the fluid density, and
+𝑐𝑝𝑥 for the fluid-specific heat capacity.
+∫ 𝜌 ∙𝜗𝑥 𝑑𝑉
+̅̅̅
+𝜗𝑥 = 𝑥𝜌 𝑑𝑉
+
+(5)
+
+∫ 𝜌𝑥 𝑝𝑥 𝑑𝑉
+∫ 𝜌𝑥 𝑑𝑉
+
+(6)
+
+∫ 𝑥
+
+𝑝𝑥 =
+̅̅̅
+
+∆𝜗𝑀 =
+
+(7)
+
+̅ ℎ𝑜𝑡 −𝜗
+̅ 𝑐𝑜𝑙𝑑 )− (𝜗
+̅ ℎ𝑜𝑡
+̅ 𝑐𝑜𝑙𝑑
+(𝜗
+−𝜗
+)
+𝑜𝑢𝑡
+𝑜𝑢𝑡
+𝑖𝑛
+𝑖𝑛
+ln (
+
+̅
+(𝜗
+ℎ𝑜𝑡
+̅
+(𝜗
+ℎ𝑜𝑡
+
+𝑖𝑛
+
+̅
+−𝜗
+𝑐𝑜𝑙𝑑
+
+𝑖𝑛
+
+𝑜𝑢𝑡
+
+̅
+−𝜗
+𝑐𝑜𝑙𝑑
+
+𝑜𝑢𝑡
+
+)
+)
+
+𝑄1̇ ≈ 𝑄2̇ = 𝑄̇
+
+(8)
+
+𝑄̇𝑥 = 𝑚̇ 𝑥 ∙ 𝑐px ∙ (|𝜗𝑥̅ 𝑖𝑛 − 𝜗𝑥̅ 𝑜𝑢𝑡 |)
+
+(9)
+
+𝑈𝑥 =
+
+(10)
+
+𝑚𝑖𝑛[𝑄̇𝑥 ]
+𝑄̇
+= 𝑟𝑒𝑎𝑙
+𝐴∙∆𝜗𝑀𝑥
+𝐴∙∆𝜗𝑀𝑥
+
+(11)
+
+∆𝑝 = 𝑝̅𝑥𝑖𝑛 − 𝑝̅𝑥𝑜𝑢𝑡
+𝑄̇𝑥
+
+𝜀 = ̇ 𝑚𝑖𝑛 =
+𝑄𝑖𝑑𝑒𝑎𝑙
+
+̅ ℎ𝑜𝑡, ∆𝜗
+̅ 𝑐𝑜𝑙𝑑 ]
+𝑚̇𝑚𝑖𝑛 ∙𝑐𝑝 ∙min [∆𝜗
+𝑈∙A∙AMTD
+
+ICED23
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+=
+
+̅ min − 𝜗
+̅ min |∙100%
+𝑚̇𝑚𝑖𝑛 ∙𝑐𝑝𝑥 ∙|𝜗
+out
+in
+
+(12)
+
+̅ ℎ𝑜𝑡 +𝜗
+̅ ℎ𝑜𝑡
+̅ 𝑐𝑜𝑙𝑑 +𝜗
+̅ 𝑐𝑜𝑙𝑑
+𝑈∙𝐴∙0.5∙((𝜗
+)−(𝜗
+))
+𝑜𝑢𝑡
+𝑜𝑢𝑡
+𝑖𝑛
+𝑖𝑛
+
+589
+
+3
+
+RESULTS
+
+Due to the mesh size, the calculations were performed on the high-performance computing system
+(HPC) of TU Dresden. The results were calculated with the introduced formulas and are listed in
+Table 3. The calculation converged after 150 iterations. The temperature has cooled by 34.52 K for the
+hot fluid, and the cold fluid has heated up by 33.02 K. As a result, the pressure drop of the hot fluid
+(5.054 Pa) was lower due to the lower viscosity, while the pressure drop of the cold fluid (17.24 Pa)
+was correspondingly higher. Also, the resulting heat flux of the cold fluid is smaller than that of the
+hot fluid and is thus defined as the actual heat flux 𝑄̇𝑥𝑚𝑖𝑛 that was used to calculate the efficiency
+coefficient 𝜀 according to (12). The heat exchanger is thus characterized by a general heat transfer
+coefficient of 550.1 [W/ (m² K)]. The cooling behavior of the heat-transferring wall is shown in crosssection layer by layer along the Z-direction (Figure 7). The best heat transfer can be seen in the areas
+with many furrows, which is why the fluids cool fastest in the middle cross-sectional area. From the
+center, the cooling increases inhomogeneously towards the edge. In general, it can be seen that fluid
+regions partially or entirely enclosed by furrows cool faster. The velocity is smaller in the central
+region at smaller wall spacing because of the furrow sections than in the outer wall regions. As a
+result, the temperature drops more slowly in areas with larger mass flows due to an inhomogeneous
+mass flow distribution in the heat exchanger. The design presented in this study has an efficiency of
+73.1% concerning the heat flow provided.
+Table 3. Results of the numerical research on differential-growth heat exchanger
+
+Result values
+̅
+𝜗𝑖𝑛
+[K]
+̅
+𝜗𝑜𝑢𝑡
+[K]
+
+Differential-growth heat exchanger
+Hot fluid
+Cold fluid
+371.44
+336.92
+
+294.96
+327.68
+
+Gyroid-heat-exchanger (Peng et al., 2019)
+
+Hot fluid
+
+Cold fluid
+
+373.15
+335.43
+
+293.15
+330.95
+
+∆𝜗𝑀
+
+[K]
+
+31.47
+
+26.23
+
+𝑚̇
+𝑄̇
+
+[kg/s]
+
+0.005
+
+0.007
+
+[W]
+
+726.8
+550.1
+
+U [W/(𝑚2 ∙ 𝐾)]
+5.054
+
+∆𝑝 [Pa]
+𝑄̇𝑖𝑑𝑒𝑎𝑙 [W]
+𝜀
+
+695.2
+
+[%]
+
+1187.9
+1811.2
+
+17.24
+
+19.15
+
+950.6
+
+1913.1
+
+73.1
+
+62.1
+inlet
+
+z = 0.06 m
+
+z = 0.02 m
+
+z = 0.08 m
+
+z = 0.04 m
+
+outlet
+
+Figure 7. Evolution of the total temperature distribution of the cross-section in the Z-direction
+of the differential-growth heat exchanger
+
+590
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+ICED23
+
+The general heat transfer coefficient U, according to (10), was also determined for better comparability
+based on the study results (Peng et al., 2019). The coefficient of heat transfer is 1811 W/ (m² K), which
+results in an ideal heat flux of 1913 W, according to (11). Based on (12), the heat flux efficiency of the
+gyro heat exchanger is 61.21%, with an actual heat flux of 1187.9 W. (Li et al., 2018)
+4
+
+DISCUSSION
+
+Compared to the gyroid-heat exchanger by Peng et al. (2019), the presented method generated a heat
+exchanger with a 37.76% larger heat-transferring wall. In addition, this method can also generate a
+geometry with significantly higher surface areas than TPMS structures. However, by choosing the
+same design space, the flow-through area of the heat exchanger was reduced by approximately
+31.04%, compared to the gyroid-heat exchanger, due to the larger surface area of the wall and the
+larger wall thickness due to manufacturing constraints. However, the maximum pressure drop in the
+heat exchanger presented here is smaller by 10%. This is due, among other things, to the fact that such
+structures have a more homogeneous flow pattern. In contrast, TPMS structures create turbulence flow
+pattern in the fluid despite laminar flows due to the channel-like structures with complex curved
+surfaces. This leads to better mixing of the fluids, which positively affects energy transfer, as seen in
+Table 3. However, the efficiency factor calculated according to (12) shows that the structure presented
+in this study can realize the maximum achievable heat flux much better with 73.1% than the heat
+exchanger (Peng et al., 2019). This can be attributed to the geometry characteristics of the structure, as
+the different furrows allow the heat transfer to be explicitly controlled in the fluid. As a result, these
+structures can react more flexibly to different thermal conditions in the fluids.
+5
+
+CONCLUSION
+
+In this study, a heat-transferring wall for heat exchangers generated by the differential-growth method
+was investigated for the first time, to the author's knowledge, in terms of its thermal and fluidmechanical properties to assess the potential of the geometry-generating method. Compared to TPMSapproximated wall structures, the investigated wall structure has a significantly higher realized heat
+transfer than the ideal possible heat transfer. Furthermore, it has been observed that with this structure,
+the heat transfer in pure laminar flow is closer to the ideal achievable heat transfer than in gyroid-heat
+exchangers. Furthermore, it has been shown that the furrow design positively affects the heat transfer
+rate. This has revealed a further potential for this method of designing heat-transferring walls. Thus, it
+is conceivable to realize targeted cooling processes via the furrow design's characteristics and
+distribution over the cross-section. Due to these potentials and the lower pressure losses, the
+possibilities of the differential-growth method could be shown in this investigation.
+Furthermore, this investigation showed a new promising approach for generating complex wall
+structures for heat exchangers, which should be investigated in more detail. In this context, additional
+parameters or field functions for a functionally targeted control of the growth behavior require further
+definitions. Likewise, the inflow and outflow area should be considered in future investigations to
+include a more realistic representation of the flow characteristics of the heat exchanger. For the
+numerical investigation, the next step should be to optimize the mesh to ensure a faster calculation,
+shorter feedback loops, and a more realistic representation of flow patterns with experimentally
+validated results. Furthermore, alternative calculation methods, such as the Lattice-Boltzmann method
+for the design of such complex geometries, should be analyzed.
+ACKNOWLEDGMENTS
+The authors thank the Center for Information Services and High-Performance Computing [Zentrum
+für Informationsdienste und Hochleistungsrechnen (ZIH)] at TU Dresden for providing its facilities for
+high throughput calculations.
+REFERENCES
+Attarzadeh, R., Rovira, M. and Duwig, C. (2021), “Design analysis of the “Schwartz D” based heat exchanger: A
+numerical study”, International Journal of Heat and Mass Transfer, Vol. 177, p. 121415. https://dx.doi.org/
+10.1016/j.ijheatmasstransfer.2021.121415
+
+ICED23
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+591
+
+Attarzadeh, R., Attarzadeh-Niaki, S.-H. and Duwig, C. (2022), “Multi-objective optimization of TPMS-based
+heat exchangers for low-temperature waste heat recovery”, Applied Thermal Engineering, Vol. 212, p.
+118448. https://dx.doi.org/10.1016/j.applthermaleng.2022.118448
+Baker, T.J. (2021), “Ansys Fluent User's Guide 2021 R2”, User Guids, ANSYS, Inc.
+Genç, A.M., Vatansever, C., Koçak, M. and Karadeniz, Z.H. (2022), “Investigation of additively manufactured
+triply periodic minimal surfaces as an air-to-air heat exchanger”, CLIMA 2022 conference, 2022: CLIMA
+2022 The 14th REHVA HVAC World Congress. https://dx.doi.org/10.34641/clima.2022.172
+Gotsman, C. and Lindenbaum, M. (1996), “On the metric properties of discrete space-filling curves”, IEEE
+transactions on image processing a publication of the IEEE Signal Processing Society, Vol. 5 No. 5, pp.
+794–797. https://dx.doi.org/10.1109/83.499920
+Jafari, D. and Wits, W.W. (2018), “The utilization of selective laser melting technology on heat transfer devices
+for thermal energy conversion applications: A review”, Renewable and Sustainable Energy Reviews,
+Vol. 91, pp. 420–442. https://dx.doi.org/10.1016/j.rser.2018.03.109
+Li, W., Yu, G. and Yu, Z. (2020), “Bioinspired heat exchangers based on triply periodic minimal surfaces for
+supercritical CO2 cycles”, Applied Thermal Engineering, Vol. 179, p. 115686. https://dx.doi.org/
+10.1016/j.applthermaleng.2020.115686
+Pedersen, H. and Singh, K. (2006), “Organic labyrinths and mazes”, in DeCarlo, D. and Markosian, L. (Eds.),
+Proceedings of the 3rd international symposium on Non-photorealistic animation and rendering - NPAR
+'06, 05.06.2006 - 07.06.2006, Annecy, France, ACM Press, New York, New York, USA, p. 79. https://
+dx.doi.org/10.1145/1124728.1124742
+Peng, H., Gao, F. and Hu, W. (2019), Design, Modeling and Characterization on Triply Periodic Minimal
+Surface Heat Exchangers with Additive Manufacturing, University of Texas at Austin.
+Roopesh Tiwari, D.M. (2017), “Effectiveness and Efficiency Analysis of Parallel Flow and Counter Flow Heat
+Exchangers”, International Journal of Application or Innovation in Engineering & Management (IJAIEM),
+pp. 314–319.
+Shah, R.K., Thonon, B. and Benforado, D.M. (2000), “Opportunities for heat exchanger applications in
+environmental systems”, Applied Thermal Engineering, Vol. 20 No. 7, pp. 631–650. https://dx.doi.org/
+10.26153/tsw/17483
+Vlahinos, M. and O'Hara, R. (2020), “Unlocking Advanced Heat Exchanger Design and Simulation with nTop
+Platform and ANSYS CFX”. nTopology
+Zhu, Z., Li, J., Peng, H. and Liu, D. (2021), “Nature-Inspired Structures Applied in Heat Transfer Enhancement
+and Drag Reduction”, Micromachines, Vol. 12 No. 6. https://dx.doi.org/10.3390/mi12060656
+
+592
+https://doi.org/10.1017/pds.2023.59 Published online by Cambridge University Press
+
+ICED23
+
+

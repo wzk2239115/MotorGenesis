@@ -324,7 +324,17 @@ class PrintedCoilNetlist(CoilNetlist):
         ]
 
     def expected_phase_components(self) -> np.ndarray:
-        """Four independent printed loops per phase (externally wired)."""
+        """Four independent printed loops per phase (externally wired).
+
+        Each tooth has one printed coil loop (coil_span=1, n_layers=1,
+        turns_per_coil=1 in the P4 frame topology).  The P5 swept-band
+        design carries ``n_turns_per_cell`` independent closed loops per
+        tooth (7 bands); when the centerline registry is present the
+        expected count is multiplied by the turn count (28 per phase, not
+        4).  Real jumpers between bands are not yet modelled in the
+        geometry — the impressed line-current source treats all turns as
+        carrying the same ``I`` in the same direction (series).
+        """
         per_phase = self.n_slots // self.n_phases
         return np.full(self.n_phases, per_phase, dtype=np.int32)
 

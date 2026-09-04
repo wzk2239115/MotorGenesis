@@ -1764,6 +1764,8 @@ class StatorCellArray:
             mf.metadata["winding_phase_owner"] = phase_owner
             mf.metadata["winding_netlist"] = netlist
             mf.metadata["winding_style"] = "printed"
+            mf.metadata["winding_n_turns_per_cell"] = self.n_bands
+            mf.metadata["winding_connection"] = "series"
 
         # --- insulation (interface-only, no sock) ---
         for n in range(n_slots):

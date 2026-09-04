@@ -92,23 +92,41 @@ def extract_electrical_parameters(
     if not isinstance(netlist, CoilNetlist):
         netlist = CoilNetlist(n_slots=12, pole_pairs=cfg.pole_pairs)
 
-    copper_vol = float(np.sum(copper)) * cfg.cell_volume
-    # Effective series turns: one coil per slot, series-connected across the
-    # phase's slots.  Parallel strands (touching bundle wires) add copper
-    # CROSS-SECTION, not ampere-turns, and other phases' radial layers are
-    # separate circuits -- neither may be counted into this phase's turns.
-    n_turns = netlist.turns_per_coil
-    slots_per_phase = netlist.n_slots // netlist.n_phases
-    n_turns_total = n_turns * slots_per_phase
+    # P5 centerline registry: use analytical R and actual turn count
+    centerline_registry = (
+        mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
+    )
+    if centerline_registry:
+        from organic_motor.optimization.line_current import centerline_resistance
+        R_info = centerline_resistance(centerline_registry)
+        n_bands = len(set(e["turn"] for e in centerline_registry))
+        n_turns_total = n_bands * (netlist.n_slots // netlist.n_phases)
+        phase_resistance = R_info["avg_phase_R"]
+        # Analytical mean path from centerline lengths
+        total_L = 0.0
+        for entry in centerline_registry:
+            pts = entry["points"]
+            for seg in range(len(pts) - 1):
+                d = pts[seg + 1] - pts[seg]
+                total_L += float(np.sqrt(d @ d))
+        mean_path = total_L / max(n_turns_total, 1)
+        wire_area = centerline_registry[0]["cross_section_area"]
+        copper_vol = total_L * wire_area
+    else:
+        copper_vol = float(np.sum(copper)) * cfg.cell_volume
+        n_turns = netlist.turns_per_coil
+        slots_per_phase = netlist.n_slots // netlist.n_phases
+        n_turns_total = n_turns * slots_per_phase
+
+        stack_len = cfg.stack_length
+        end_turn_arc = netlist.coil_span * netlist.slot_pitch * cfg.R_winding_inner
+        mean_path = 2 * stack_len + 2 * end_turn_arc
+        L_wire = n_turns_total * mean_path
+
+        wire_area = copper_vol / max(L_wire, 1e-9)
+        phase_resistance = L_wire / (cfg.sigma_copper * max(wire_area, 1e-12))
 
     stack_len = cfg.stack_length
-    end_turn_arc = netlist.coil_span * netlist.slot_pitch * cfg.R_winding_inner
-    mean_path = 2 * stack_len + 2 * end_turn_arc
-    L_wire = n_turns_total * mean_path
-
-    wire_area = copper_vol / max(L_wire, 1e-9)
-    phase_resistance = L_wire / (cfg.sigma_copper * max(wire_area, 1e-12))
-
     mu0 = cfg.mu0
     mu_r = cfg.mu_r_iron
     iron_vol = float(np.sum(iron)) * cfg.cell_volume
