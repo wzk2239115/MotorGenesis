@@ -1,0 +1,16 @@
+{
+  "E5_phase_sequence_sweep": [
+    {"sign": 1, "delta_elec_deg": 0, "T_odd_mean": 0.000649, "T_odd_std": 0.055955},
+    {"sign": 1, "delta_elec_deg": 30, "T_odd_mean": 0.000686, "T_odd_std": 0.055593},
+    {"sign": 1, "delta_elec_deg": 60, "T_odd_mean": 0.000538, "T_odd_std": 0.055347},
+    {"sign": 1, "delta_elec_deg": 90, "T_odd_mean": 0.000247, "T_odd_std": 0.055467},
+    {"sign": 1, "delta_elec_deg": 120, "T_odd_mean": -0.000111, "T_odd_std": 0.055831},
+    {"sign": 1, "delta_elec_deg": 150, "T_odd_mean": -0.000439, "T_odd_std": 0.056074},
+    {"sign": 1, "delta_elec_deg": 180, "T_odd_mean": -0.000649, "T_odd_std": 0.055955},
+    {"sign": -1, "delta_elec_deg": 0, "T_odd_mean": -0.020756, "T_odd_std": 0.000360},
+    {"sign": -1, "delta_elec_deg": 30, "T_odd_mean": 0.020025, "T_odd_std": 0.000155},
+    {"sign": -1, "delta_elec_deg": 60, "T_odd_mean": 0.055442, "T_odd_std": 0.000523},
+    {"sign": -1, "delta_elec_deg": 90, "T_odd_mean": 0.076003, "T_odd_std": 0.000793},
+    {"sign": -1, "delta_elec_deg": 120, "T_odd_mean": 0.076199, "T_odd_std": 0.000856}
+  ]
+}
