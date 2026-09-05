@@ -36,6 +36,116 @@ from organic_motor.geometry.grid3d import meshgrid3d
 OUT_DIR = Path(__file__).parent.parent / "reports" / "assembly"
 
 
+def build_motor_with_assembly(cfg: MotorConfig3D | None = None) -> tuple:
+    """Build complete motor + honeycomb support + helical cooling + wall.
+
+    Returns (MaterialField, cfg).
+    """
+    cfg = cfg or MotorConfig3D(shape=(96, 96, 58))
+    cx, cy, cz = cfg.center
+
+    # 1. Build the motor itself (stator iron + copper + pm + insulator)
+    print("  Building motor...")
+    from organic_motor.construct.objects import field_driven_motor
+    motor = field_driven_motor(cfg)
+    mf = motor.build()
+    print(f"    materials: {mf.materials_present()}")
+
+    # 2. Build support/cooling/wall
+    r_winding_outer = cfg.R_winding_outer       # 0.043
+    r_design = cfg.R_design                      # 0.050
+    z_half = cfg.stator_half_length              # 0.031
+
+    r_support_inner = r_winding_outer + 0.001    # 0.044
+    r_support_outer = r_design - 0.001           # 0.049
+    r_wall_inner = r_design                       # 0.050
+    r_wall_outer = r_design + 0.002               # 0.052
+
+    print("  Building honeycomb support...")
+    honeycomb = HoneycombGenerator(
+        r_inner=r_support_inner,
+        r_outer=r_support_outer,
+        z_bottom=-z_half,
+        z_top=z_half,
+        cell_size=0.006,
+        wall_thickness=0.001,
+    ).build(cfg)
+
+    print("  Building helical cooling channel...")
+    helix = HelicalChannelGenerator(
+        radius=(r_support_inner + r_support_outer) / 2,
+        pitch=2 * z_half / 4.0,
+        n_turns=4.0,
+        channel_radius=0.002,
+        z_start=-z_half + 0.002,
+        handedness=1,
+        n_segments=100,
+    ).build(cfg)
+
+    print("  Building housing wall...")
+    X, Y, Z = meshgrid3d(cfg)
+    R = np.sqrt((X - cx)**2 + (Y - cy)**2)
+    wall_inner_sdf = np.maximum(r_wall_inner - R, R - r_wall_outer)
+    wall_z = np.abs(Z - cz) - (z_half + 0.002)
+    wall = np.maximum(wall_inner_sdf, wall_z)
+    wall_field = SDFVoxelField(wall.astype(np.float32), cfg.spacing, cfg.origin)
+
+    print("  Building inlet/outlet ports...")
+    port_radius = 0.002
+    inlet_pts = np.array([
+        [cx + r_wall_inner - 0.001, cy, cz - z_half + 0.003],
+        [cx + r_wall_outer + 0.001, cy, cz - z_half + 0.003],
+    ])
+    inlet_sdf = polyline_capsule_sdf(
+        cfg.shape, cfg.spacing, cfg.origin, inlet_pts, port_radius,
+    )
+    outlet_pts = np.array([
+        [cx - r_wall_inner - 0.001, cy, cz + z_half - 0.003],
+        [cx - r_wall_outer - 0.001, cy, cz + z_half - 0.003],
+    ])
+    outlet_sdf = polyline_capsule_sdf(
+        cfg.shape, cfg.spacing, cfg.origin, outlet_pts, port_radius,
+    )
+    port_void = np.minimum(inlet_sdf, outlet_sdf)
+
+    # 3. Add to motor MaterialField
+    # Honeycomb iron (non-priority: doesn't carve other materials)
+    mf.add(honeycomb, "iron", priority=False)
+    # Wall iron (priority: carves coolant)
+    mf.add(wall_field, "iron", priority=True)
+    # Coolant (helix + ports, priority: carves iron)
+    coolant_sdf = np.minimum(helix.sdf, port_void)
+    coolant_field = SDFVoxelField(
+        coolant_sdf.astype(np.float32), cfg.spacing, cfg.origin,
+    )
+    mf.add(coolant_field, "coolant", priority=True)
+
+    return mf, cfg
+
+
+def export_checkpoint(mf, cfg, out_dir: Path):
+    """Save MaterialField as NPZ checkpoint for web viewer."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = out_dir / "checkpoints"
+    ckpt_dir.mkdir(exist_ok=True)
+
+    vol = mf.to_volume()
+    npz_path = ckpt_dir / "step_000000.npz"
+    np.savez(
+        npz_path,
+        spacing=np.array(cfg.spacing, dtype=np.float32),
+        origin=np.array(cfg.origin, dtype=np.float32),
+        rho_iron=vol.iron.astype(np.float32),
+        rho_pm=vol.pm.astype(np.float32),
+        rho_copper=vol.copper.astype(np.float32) if vol.copper is not None else np.zeros(cfg.shape, np.float32),
+        rho_air=vol.air.astype(np.float32) if vol.air is not None else np.zeros(cfg.shape, np.float32),
+        rho_coolant=vol.coolant.astype(np.float32) if vol.coolant is not None else np.zeros(cfg.shape, np.float32),
+        rho_insulator=vol.insulator.astype(np.float32) if vol.insulator is not None else np.zeros(cfg.shape, np.float32),
+    )
+    print(f"  Checkpoint saved: {npz_path}")
+    return npz_path
+
+
 def build_assembly(cfg: MotorConfig3D | None = None) -> dict:
     """Build the full assembly and return audit results.
 
@@ -326,8 +436,19 @@ def _generate_views(cfg, mf, out_dir):
 
 
 if __name__ == "__main__":
-    print("=== ASSEMBLY DEMO ===")
-    result = build_assembly()
-    print("\n=== AUDIT RESULTS ===")
-    for k, v in result["audit"].items():
-        print(f"  {k}: {v}")
+    import sys
+
+    if "--full" in sys.argv or "--motor" in sys.argv:
+        print("=== MOTOR + ASSEMBLY (full) ===")
+        cfg = MotorConfig3D(shape=(96, 96, 58))
+        mf, cfg = build_motor_with_assembly(cfg)
+        out_dir = Path(__file__).parent.parent / "out" / "assembly"
+        export_checkpoint(mf, cfg, out_dir)
+        print(f"\n  Materials: {mf.materials_present()}")
+        print("  DONE — open web viewer and select 'assembly' run")
+    else:
+        print("=== ASSEMBLY DEMO (support only) ===")
+        result = build_assembly()
+        print("\n=== AUDIT RESULTS ===")
+        for k, v in result["audit"].items():
+            print(f"  {k}: {v}")
