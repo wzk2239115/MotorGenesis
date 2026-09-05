@@ -130,24 +130,73 @@ def checkpoint_to_glb(
     Taubin smoothing, so the viewer shows smooth motor geometry rather than
     voxel blocks even at modest grid resolution.  ``view="stator"`` strips
     the rotor assembly for the printed-stator reference view.
+
+    When a ``rotor_mask`` is present in the NPZ, iron is split into
+    ``rotor_iron`` and ``stator_iron`` so the frontend can rotate the
+    rotor group independently.
     """
     import trimesh
 
     vol = apply_view(_load_volume(npz_path), view)
+
+    rotor_mask = None
+    try:
+        with np.load(npz_path, allow_pickle=False) as data:
+            if "rotor_mask" in data.files:
+                rotor_mask = np.asarray(data["rotor_mask"], dtype=np.float32)
+    except Exception:
+        pass
+
     scene = trimesh.Scene()
+
+    if rotor_mask is not None and "iron" in vol.materials:
+        iron = vol.materials["iron"]
+        rotor_iron = (iron * rotor_mask).astype(np.float32)
+        stator_iron = (iron * (1.0 - rotor_mask)).astype(np.float32)
+
+        for name, density in [("rotor_iron", rotor_iron), ("stator_iron", stator_iron)]:
+            if density.max(initial=0.0) < level:
+                continue
+            from organic_motor.geometry.voxel import VoxelVolume
+            sub_vol = VoxelVolume(
+                iron=density, pm=np.zeros_like(density),
+                spacing=vol.spacing, origin=vol.origin,
+            )
+            mesh = material_mesh(
+                sub_vol, "iron",
+                level=level, smoothing=smoothing,
+                smoothing_iterations=smoothing_iterations,
+            )
+            if mesh is not None:
+                scene.add_geometry(mesh, node_name=name, geom_name=name)
+    else:
+        for material in materials:
+            if material not in vol.materials:
+                continue
+            mesh = material_mesh(
+                vol, material,
+                level=level, smoothing=smoothing,
+                smoothing_iterations=smoothing_iterations,
+            )
+            if mesh is None:
+                continue
+            scene.add_geometry(mesh, node_name=material, geom_name=material)
+
     for material in materials:
+        if material == "iron":
+            continue
         if material not in vol.materials:
             continue
         mesh = material_mesh(
-            vol,
-            material,
-            level=level,
-            smoothing=smoothing,
+            vol, material,
+            level=level, smoothing=smoothing,
             smoothing_iterations=smoothing_iterations,
         )
         if mesh is None:
             continue
-        scene.add_geometry(mesh, node_name=material, geom_name=material)
+        node_name = f"rotor_{material}" if material == "pm" else material
+        scene.add_geometry(mesh, node_name=node_name, geom_name=node_name)
+
     if len(scene.geometry) == 0:
         return trimesh.Trimesh(vertices=np.zeros((3, 3)), faces=[[0, 1, 2]]).export(
             file_type="glb"

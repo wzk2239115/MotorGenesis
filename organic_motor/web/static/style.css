@@ -137,3 +137,16 @@ footer { margin-top: auto; padding-top: 6px; }
   #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   #sidebar { max-height: 42vh; }
 }
+
+.sim-params { display: flex; flex-direction: column; gap: 3px; }
+.sim-params label { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+.sim-params input { width: 70px; background: var(--bg2); border: 1px solid var(--line); color: var(--text); padding: 2px 4px; border-radius: 3px; font-size: 11px; }
+.sim-controls { display: flex; gap: 4px; margin-top: 6px; }
+.sim-btn { flex: 1; padding: 5px 8px; border: 1px solid var(--accent); background: rgba(79,195,247,0.1); color: var(--accent); border-radius: 4px; cursor: pointer; font-size: 12px; }
+.sim-btn:disabled { opacity: 0.4; cursor: default; }
+.sim-btn:not(:disabled):hover { background: rgba(79,195,247,0.25); }
+.sim-status { font-size: 11px; color: var(--muted); margin-top: 4px; padding: 3px 6px; background: rgba(20,32,40,0.5); border-radius: 3px; }
+.sim-playback { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+.sim-playback input[type=range] { flex: 1; }
+.sim-playback span { font-size: 10px; color: var(--muted); white-space: nowrap; }
+#curvesCanvas { width: 100%; height: auto; margin-top: 4px; background: rgba(10,18,25,0.8); border-radius: 4px; }

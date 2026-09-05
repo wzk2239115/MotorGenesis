@@ -80,6 +80,7 @@ ground.receiveShadow = true;
 scene.add(ground);
 
 let currentModel = null;
+let rotorGroup = null;
 const materialNodes = new Map(); // name -> THREE.Object3D
 
 function clearModel() {
@@ -93,6 +94,17 @@ function clearModel() {
       }
     });
     currentModel = null;
+  }
+  if (rotorGroup) {
+    scene.remove(rotorGroup);
+    rotorGroup.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        mats.forEach((m) => m.dispose());
+      }
+    });
+    rotorGroup = null;
   }
   materialNodes.clear();
 }
@@ -136,35 +148,58 @@ async function showCheckpoint(run, step, level) {
     // Index material nodes by name for per-material toggling.
     const matStyle = {
       iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
+      rotor_iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
+      stator_iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
       copper: { color: 0xc87533, metalness: 0.95, roughness: 0.28, env: 1.4 },
       pm: { color: 0x8a2042, metalness: 0.5, roughness: 0.45, env: 0.8 },
+      rotor_pm: { color: 0x8a2042, metalness: 0.5, roughness: 0.45, env: 0.8 },
       coolant: { color: 0x408cde, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.45 },
       insulator: { color: 0xe8e6da, metalness: 0.05, roughness: 0.6, env: 0.7 },
     };
+    rotorGroup = new THREE.Group();
     model.traverse((o) => {
       if (o.isMesh) {
         o.castShadow = true;
         o.receiveShadow = true;
         const name = (o.name || o.parent?.name || "").toLowerCase();
+        let matched = null;
         for (const mat of Object.keys(matStyle)) {
           if (name.includes(mat)) {
-            materialNodes.set(mat, o);
-            const st = matStyle[mat];
-            const material = new THREE.MeshStandardMaterial({
-              color: st.color, metalness: st.metalness,
-              roughness: st.roughness, envMapIntensity: st.env,
-            });
-            if (st.opacity !== undefined) {
-              material.transparent = true;
-              material.opacity = st.opacity;
-              material.depthWrite = false;
-            }
-            o.material = material;
+            matched = mat;
+            break;
           }
+        }
+        if (!matched) {
+          for (const mat of Object.keys(matStyle)) {
+            if (mat.includes("iron") && name.includes("iron")) { matched = mat; break; }
+            if (mat.includes("pm") && name.includes("pm")) { matched = mat; break; }
+          }
+        }
+        if (matched) {
+          materialNodes.set(matched, o);
+          const st = matStyle[matched];
+          const material = new THREE.MeshStandardMaterial({
+            color: st.color, metalness: st.metalness,
+            roughness: st.roughness, envMapIntensity: st.env,
+          });
+          if (st.opacity !== undefined) {
+            material.transparent = true;
+            material.opacity = st.opacity;
+            material.depthWrite = false;
+          }
+          o.material = material;
+        }
+        if (name.includes("rotor")) {
+          rotorGroup.add(o.clone());
+          o.visible = false;
         }
       }
     });
-    scene.add(model);
+    if (rotorGroup.children.length > 0) {
+      scene.add(rotorGroup);
+    } else {
+      scene.add(model);
+    }
     overlay.classList.add("hidden");
     status(`第 ${step} 步`, "");
     syncMaterialToggles();
@@ -509,6 +544,172 @@ document.querySelectorAll(".slice-axes button").forEach((btn) => {
 $("sliceIndex").addEventListener("input", () => { sliceState.index = parseInt($("sliceIndex").value, 10); loadSlice(); });
 
 // ---------------------------------------------------------------------------
+// Simulation (通电仿真)
+// ---------------------------------------------------------------------------
+let simState = {
+  id: null,
+  status: "idle",
+  results: null,
+  playing: false,
+  playIndex: 0,
+  playSpeed: 1.0,
+  pollTimer: null,
+};
+
+async function startSimulation() {
+  if (!state.currentRun) { status("请先选择运行实例", "error"); return; }
+  const params = {
+    voltage: parseFloat($("simVoltage").value) || 24,
+    current_limit: parseFloat($("simCurrentLimit").value) || 50,
+    initial_angle: (parseFloat($("simInitialAngle").value) || 0) * Math.PI / 180,
+    load_torque: parseFloat($("simLoadTorque").value) || 0.005,
+    steps: parseInt($("simSteps").value) || 4000,
+  };
+  $("simRunBtn").disabled = true;
+  $("simStatus").textContent = "提交中…";
+  try {
+    const res = await fetch(`/api/runs/${encodeURIComponent(state.currentRun)}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    simState.id = data.sim_id;
+    simState.status = "queued";
+    $("simStatus").textContent = "排队中…";
+    pollSimulation();
+  } catch (err) {
+    $("simStatus").textContent = `提交失败: ${err.message}`;
+    $("simRunBtn").disabled = false;
+  }
+}
+
+function pollSimulation() {
+  if (simState.pollTimer) clearInterval(simState.pollTimer);
+  simState.pollTimer = setInterval(async () => {
+    if (!simState.id) return;
+    try {
+      const res = await fetch(`/api/simulations/${simState.id}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      simState.status = data.status;
+      if (data.status === "done" && data.results) {
+        simState.results = data.results;
+        $("simStatus").textContent = `完成 · ${data.results.time_s.length} 步 · 末速 ${(data.results.rpm[data.results.rpm.length-1]).toFixed(0)} rpm`;
+        $("simRunBtn").disabled = false;
+        $("simPlayBtn").disabled = false;
+        $("simResetBtn").disabled = false;
+        $("simTimeSlider").disabled = false;
+        $("simTimeSlider").max = data.results.time_s.length - 1;
+        $("simTimeSlider").value = 0;
+        simState.playIndex = 0;
+        drawCurves(data.results);
+        $("curvesPanel").style.display = "";
+        clearInterval(simState.pollTimer);
+        simState.pollTimer = null;
+        startPlayback();
+      } else if (data.status === "failed") {
+        $("simStatus").textContent = `失败: ${data.error || "未知错误"}`;
+        $("simRunBtn").disabled = false;
+        clearInterval(simState.pollTimer);
+        simState.pollTimer = null;
+      } else if (data.status === "rejected") {
+        $("simStatus").textContent = `拒绝: ${data.error || ""}`;
+        $("simRunBtn").disabled = false;
+        clearInterval(simState.pollTimer);
+        simState.pollTimer = null;
+      } else {
+        $("simStatus").textContent = `运行中: ${data.status}…`;
+      }
+    } catch (err) { /* keep polling */ }
+  }, 1000);
+}
+
+function startPlayback() {
+  simState.playing = true;
+  simState.playIndex = 0;
+  $("simPlayBtn").textContent = "⏸ 暂停";
+}
+
+function pausePlayback() {
+  simState.playing = false;
+  $("simPlayBtn").textContent = "▶ 播放";
+}
+
+function resetPlayback() {
+  simState.playing = false;
+  simState.playIndex = 0;
+  $("simPlayBtn").textContent = "▶ 播放";
+  $("simTimeSlider").value = 0;
+  if (rotorGroup) rotorGroup.rotation.z = 0;
+  $("simTimeLabel").textContent = "—";
+}
+
+function updatePlayback() {
+  if (!simState.playing || !simState.results) return;
+  const r = simState.results;
+  const n = r.time_s.length;
+  simState.playIndex += Math.max(1, Math.round(simState.playSpeed * 2));
+  if (simState.playIndex >= n) {
+    simState.playIndex = n - 1;
+    pausePlayback();
+  }
+  const i = simState.playIndex;
+  $("simTimeSlider").value = i;
+  $("simTimeLabel").textContent = `${(r.time_s[i]*1000).toFixed(1)} ms · ${(r.rpm[i]).toFixed(0)} rpm`;
+  if (rotorGroup) {
+    rotorGroup.rotation.z = r.rotor_angle_rad[i];
+  }
+}
+
+function drawCurves(r) {
+  const canvas = $("curvesCanvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const n = r.time_s.length;
+  const tMax = r.time_s[n-1];
+  const series = [
+    { data: r.rpm, color: "#7ee08a", label: "rpm", scale: 1 },
+    { data: r.torque_Nm, color: "#e0a87e", label: "T [Nm]", scale: 1 },
+    { data: r.currents_A.map(c => c[0]), color: "#7eaee0", label: "Ia [A]", scale: 1 },
+  ];
+  for (const s of series) {
+    let min = Infinity, max = -Infinity;
+    for (const v of s.data) { if (v < min) min = v; if (v > max) max = v; }
+    if (max - min < 1e-9) { min -= 1; max += 1; }
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = (r.time_s[i] / tMax) * W;
+      const y = H - ((s.data[i] - min) / (max - min)) * H;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#888";
+  ctx.font = "10px sans-serif";
+  ctx.fillText("rpm / T / Ia", 4, 12);
+}
+
+$("simRunBtn").addEventListener("click", startSimulation);
+$("simPlayBtn").addEventListener("click", () => {
+  if (simState.playing) pausePlayback(); else startPlayback();
+});
+$("simResetBtn").addEventListener("click", resetPlayback);
+$("simTimeSlider").addEventListener("input", () => {
+  if (!simState.results) return;
+  simState.playIndex = parseInt($("simTimeSlider").value);
+  pausePlayback();
+  const r = simState.results;
+  const i = simState.playIndex;
+  $("simTimeLabel").textContent = `${(r.time_s[i]*1000).toFixed(1)} ms · ${(r.rpm[i]).toFixed(0)} rpm`;
+  if (rotorGroup) rotorGroup.rotation.z = r.rotor_angle_rad[i];
+});
+
+// ---------------------------------------------------------------------------
 // Render loop
 // ---------------------------------------------------------------------------
 let last = performance.now();
@@ -516,6 +717,7 @@ let frameCount = 0;
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
+  updatePlayback();
   renderer.render(scene, camera);
   frameCount++;
   const now = performance.now();

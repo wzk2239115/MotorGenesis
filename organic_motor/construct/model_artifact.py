@@ -127,6 +127,7 @@ class ModelArtifact:
     has_magnetization: bool = True
     has_centerlines: bool = True
     timestamp: str = ""
+    rotor_mask: np.ndarray | None = None
 
     @classmethod
     def from_motor(cls, motor, mf, cfg) -> "ModelArtifact":
@@ -159,6 +160,11 @@ class ModelArtifact:
 
         design_hash = _compute_design_hash(densities, mag)
 
+        from organic_motor.geometry.domain3d import domain_masks3d
+        rotor_mask = np.asarray(
+            domain_masks3d(cfg)["rotor_design"], dtype=np.float32
+        )
+
         return cls(
             densities=densities,
             spacing=cfg.spacing,
@@ -172,6 +178,7 @@ class ModelArtifact:
             has_magnetization=mag.max() > 0,
             has_centerlines=len(registry) > 0,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            rotor_mask=rotor_mask,
         )
 
     @classmethod
@@ -202,6 +209,11 @@ class ModelArtifact:
 
         design_hash = _compute_design_hash(densities, magnetization)
 
+        from organic_motor.geometry.domain3d import domain_masks3d
+        rotor_mask = np.asarray(
+            domain_masks3d(cfg)["rotor_design"], dtype=np.float32
+        )
+
         return cls(
             densities=densities,
             spacing=cfg.spacing,
@@ -215,6 +227,7 @@ class ModelArtifact:
             has_magnetization=magnetization.max() > 0,
             has_centerlines=len(registry) > 0,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            rotor_mask=rotor_mask,
         )
 
     def save(self, path: str | Path) -> Path:
@@ -236,6 +249,8 @@ class ModelArtifact:
         arrays["version"] = np.array(self.version)
         arrays["has_magnetization"] = np.array(self.has_magnetization)
         arrays["has_centerlines"] = np.array(self.has_centerlines)
+        if self.rotor_mask is not None:
+            arrays["rotor_mask"] = self.rotor_mask.astype(np.float32)
 
         reg_arrays = _registry_to_arrays(self.centerline_registry)
         for k, v in reg_arrays.items():
@@ -261,6 +276,7 @@ class ModelArtifact:
             "timestamp": self.timestamp,
             "centerline_count": len(self.centerline_registry),
             "materials": sorted(self.densities.keys()),
+            "has_rotor_mask": self.rotor_mask is not None,
         }
         (path / "model_meta.json").write_text(
             json.dumps(meta, indent=2, default=str), encoding="utf-8",
@@ -311,6 +327,10 @@ class ModelArtifact:
             if has_cl or "count" in data.files:
                 registry = _arrays_to_registry(data)
 
+            rotor_mask = None
+            if "rotor_mask" in data.files:
+                rotor_mask = np.asarray(data["rotor_mask"], dtype=np.float32)
+
         shape = tuple(densities["rho_iron"].shape)
 
         return cls(
@@ -327,6 +347,7 @@ class ModelArtifact:
             has_magnetization=has_mag,
             has_centerlines=has_cl,
             timestamp=meta.get("timestamp", ""),
+            rotor_mask=rotor_mask,
         )
 
     def can_energize(self) -> tuple[bool, list[str]]:

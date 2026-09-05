@@ -247,8 +247,182 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.post("/api/runs/{run_name}/simulate")
+    async def start_simulation(run_name: str, body: dict = None) -> dict:
+        """Start a powered transient simulation for this run.
+
+        Body params: voltage, current_limit, initial_angle, steps, dt,
+        load_torque, load_viscous, rotor_inertia.
+
+        Returns sim_id for polling.
+        """
+        import threading
+        import uuid
+
+        run_dir = _find_run(run_name)
+        sim_id = f"sim_{uuid.uuid4().hex[:8]}"
+        settings = body or {}
+        app.state.simulations[sim_id] = {
+            "status": "queued",
+            "run_name": run_name,
+            "settings_input": settings,
+            "started_at": time.time(),
+        }
+        thread = threading.Thread(
+            target=_run_simulation_thread,
+            args=(sim_id, run_dir, settings, app.state.simulations),
+            daemon=True,
+        )
+        thread.start()
+        return {"sim_id": sim_id, "status": "queued"}
+
+    @app.get("/api/simulations/{sim_id}")
+    def get_simulation_status(sim_id: str) -> dict:
+        """Poll simulation status and results."""
+        sim = app.state.simulations.get(sim_id)
+        if sim is None:
+            raise HTTPException(status_code=404, detail="simulation not found")
+        return sim
+
     app.state.roots = roots
+    app.state.simulations = {}
     return app
+
+
+def _run_simulation_thread(
+    sim_id: str, run_dir: Path, settings: dict, app_state: dict,
+):
+    """Run a powered transient in a background thread.
+
+    Updates app_state[sim_id] with status and results.
+    """
+    import numpy as np
+    from organic_motor.construct.model_artifact import ModelArtifact
+    from organic_motor.config3d import MotorConfig3D
+
+    sim = app_state.get(sim_id)
+    if sim is None:
+        return
+    try:
+        sim["status"] = "loading"
+        artifact = ModelArtifact.load(run_dir)
+        can_run, reasons = artifact.can_energize()
+        if not can_run:
+            sim["status"] = "rejected"
+            sim["error"] = "; ".join(reasons)
+            return
+
+        from organic_motor.config3d import MotorConfig3D
+        import inspect
+        valid_params = set(inspect.signature(MotorConfig3D.__init__).parameters.keys()) - {"self"}
+        cfg_kwargs = {"shape": tuple(artifact.shape)}
+        for k, v in artifact.config_dict.items():
+            if k not in valid_params:
+                continue
+            if isinstance(v, list) and len(v) == 3:
+                cfg_kwargs[k] = tuple(v)
+            elif isinstance(v, (int, float, str, bool)):
+                cfg_kwargs[k] = v
+        cfg = MotorConfig3D(**cfg_kwargs)
+
+        from organic_motor.construct.startup_validation import (
+            _logits_from_densities, _mf_from_artifact,
+        )
+        import jax.numpy as jnp
+
+        logits = _logits_from_densities(artifact, cfg)
+        magnetization = jnp.asarray(artifact.magnetization)
+        mf = _mf_from_artifact(artifact, cfg)
+
+        from organic_motor.construct.transient_bridge import (
+            extract_electrical_parameters,
+        )
+        electrical = extract_electrical_parameters(mf, cfg)
+
+        from organic_motor.experiments.motor3d_powered import (
+            Powered3DSettings, compute_powered_maps, run_powered_transient,
+        )
+
+        voltage = float(settings.get("voltage", 24.0))
+        current_limit = float(settings.get("current_limit", 50.0))
+        initial_angle = float(settings.get("initial_angle", 0.0))
+        steps = int(settings.get("steps", 4000))
+        dt = float(settings.get("dt", 2.0e-5))
+        load_torque = float(settings.get("load_torque", 0.005))
+        load_viscous = float(settings.get("load_viscous", 1.0e-4))
+        rotor_inertia = float(settings.get("rotor_inertia", 2.0e-4))
+
+        p_settings = Powered3DSettings(
+            phase_voltage_peak=voltage,
+            phase_resistance=electrical.phase_resistance,
+            phase_inductance=electrical.phase_inductance,
+            flux_linkage=electrical.flux_linkage,
+            current_limit=current_limit,
+            commutation_offset=3.1415927,
+            steps=steps,
+            dt=dt,
+            load_torque=load_torque,
+            load_viscous=load_viscous,
+            rotor_inertia=rotor_inertia,
+        )
+
+        sim["status"] = "solving_maps"
+        n_map_angles = 6
+        elec_period = 2.0 * np.pi / cfg.pole_pairs
+        angles_map = np.linspace(0, elec_period, n_map_angles, endpoint=False)
+
+        from organic_motor.optimization.objective3d import forward3d_fields
+        from organic_motor.construct.realize import realize
+        fields, mag = realize(mf, cfg, artifact.magnetization)
+        centerline_registry = artifact.centerline_registry or None
+
+        def phase_solver(single, angle, amplitudes):
+            return forward3d_fields(
+                cfg, fields, mag, [angle], single,
+                phase_amplitudes=amplitudes,
+                centerline_registry=centerline_registry,
+            )
+
+        maps = compute_powered_maps(
+            cfg, logits, None, magnetization,
+            angles_map, p_settings,
+            phase_solver=phase_solver,
+            include_mechanics=False,
+        )
+
+        sim["status"] = "running_transient"
+        data = run_powered_transient(maps, p_settings, cfg, initial_angle)
+
+        sim["status"] = "done"
+        sim["results"] = {
+            "time_s": data["time_s"].tolist(),
+            "rotor_angle_rad": data["rotor_angle_rad"].tolist(),
+            "angular_velocity_rad_s": data["angular_velocity_rad_s"].tolist(),
+            "currents_A": data["currents_A"].tolist(),
+            "torque_Nm": data["transient_torque_Nm"].tolist(),
+            "joule_power_W": data["transient_joule_power_W"].tolist(),
+            "iron_power_W": data["transient_iron_power_W"].tolist(),
+            "max_temperature_C": data["max_temperature_C"].tolist(),
+            "rpm": (data["angular_velocity_rad_s"] * 60 / (2 * np.pi)).tolist(),
+        }
+        sim["settings"] = {
+            "voltage": voltage,
+            "current_limit": current_limit,
+            "initial_angle": initial_angle,
+            "steps": steps,
+            "dt": dt,
+            "load_torque": load_torque,
+            "load_viscous": load_viscous,
+            "rotor_inertia": rotor_inertia,
+            "phase_resistance": electrical.phase_resistance,
+            "phase_inductance": electrical.phase_inductance,
+            "flux_linkage": electrical.flux_linkage,
+        }
+    except Exception as e:
+        sim["status"] = "failed"
+        sim["error"] = str(e)
+        import traceback
+        sim["traceback"] = traceback.format_exc()
 
 
 app = create_app()
