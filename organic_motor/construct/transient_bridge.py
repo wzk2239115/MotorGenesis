@@ -73,65 +73,86 @@ def load_constructed_checkpoint(
 def extract_fea_flux_linkage(
     mf, cfg: MotorConfig3D, magnetization_raw=None,
 ) -> float:
-    """Run a PM-only Maxwell solve (zero current) and extract flux linkage
-    by integrating the vector potential along the winding centerlines.
+    """Extract PM flux linkage via mutual-energy integral over a full
+    electrical cycle.
 
-    λ = Σ polarity × ∮ A · dl  (per phase, averaged over 3 phases)
+    Method:
+      1. Run PM-only Maxwell solves (zero current) at several rotor
+         angles spanning one electrical period (π/pole_pairs mech).
+      2. At each angle, compute the mutual-energy flux linkage for each
+         phase using the closed-loop line integral of A along the
+         winding centerlines (now closed loops):
 
-    This is the correct method for a radial-flux motor: the PM field
-    produces A in the z-direction, and the winding conductors run
-    axially (along z) in the active region.  The integral captures the
-    full winding distribution, not just a point sample of B.
+           λ_p(θ) = Σ_tooth polarity × ∮ A_PM(θ) · dl
 
-    Returns flux_linkage [Wb] from the actual FEA field.
+         The integral is gauge-invariant because each centerline is a
+         CLOSED loop (the serpentine includes a terminal return).
+
+      3. Fit the fundamental component of λ_p(θ) vs θ for each phase.
+         The amplitude is the PM flux linkage; the phase should be
+         120° apart.
+
+    Returns the mean per-phase flux linkage amplitude [Wb].
     """
     import jax.numpy as jnp
     import numpy as np
     from organic_motor.construct.realize import realize
     from organic_motor.optimization.objective3d import forward3d_fields
 
-    fields, mag = realize(mf, cfg, magnetization_raw)
-    # PM-only: zero current (phase_amplitudes = 0)
-    result = forward3d_fields(
-        cfg, fields, mag, angles=[0.0],
-        phase_amplitudes=jnp.zeros(3),
-        centerline_registry=mf.metadata.get("centerline_registry"),
-    )
-    A_vec = np.asarray(result.vector_potential)  # (nx, ny, nz, 3)
-
     reg = mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
     if not reg:
         return 0.0
 
-    # Integrate A·dl along each centerline, group by phase
-    phase_flux = {0: 0.0, 1: 0.0, 2: 0.0}
-    for entry in reg:
-        pts = entry["points"]
-        phase = entry["phase"]
-        polarity = entry["polarity"]
-        n_turns = entry.get("n_turns", 7)
-        # Each turn carries the same flux; the serpentine has all turns
-        # in series, so the total flux linkage = sum over all turns.
-        # But since we integrate along the ENTIRE path (all turns),
-        # the integral already accounts for all turns.
-        flux = 0.0
-        for seg in range(len(pts) - 1):
-            p1 = pts[seg]
-            p2 = pts[seg + 1]
-            dl = p2 - p1
-            # Sample A at midpoint
-            mid = 0.5 * (p1 + p2)
-            idx = ((mid - cfg.origin) / cfg.spacing).astype(int)
-            i = int(np.clip(idx[0], 0, cfg.shape[0] - 1))
-            j = int(np.clip(idx[1], 0, cfg.shape[1] - 1))
-            k = int(np.clip(idx[2], 0, cfg.shape[2] - 1))
-            A_mid = A_vec[i, j, k, :]
-            flux += float(np.dot(A_mid, dl))
-        phase_flux[phase] += polarity * flux
+    n_angles = 6  # sample one electrical period
+    elec_period = 2.0 * np.pi / cfg.pole_pairs
+    angles = np.linspace(0, elec_period, n_angles, endpoint=False)
 
-    # Average per-phase flux linkage
-    avg_flux = sum(phase_flux.values()) / 3.0
-    return abs(avg_flux)
+    phase_fluxes = {0: [], 1: [], 2: []}
+    fields, mag = realize(mf, cfg, magnetization_raw)
+
+    for angle in angles:
+        result = forward3d_fields(
+            cfg, fields, mag, angles=[angle],
+            phase_amplitudes=jnp.zeros(3),
+            centerline_registry=reg,
+        )
+        A_vec = np.asarray(result.vector_potential)
+
+        for entry in reg:
+            pts = entry["points"]
+            phase = entry["phase"]
+            polarity = entry["polarity"]
+            flux = 0.0
+            for seg in range(len(pts)):
+                p1 = pts[seg]
+                p2 = pts[(seg + 1) % len(pts)]
+                dl = p2 - p1
+                mid = 0.5 * (p1 + p2)
+                idx = ((mid - cfg.origin) / cfg.spacing).astype(int)
+                i = int(np.clip(idx[0], 0, cfg.shape[0] - 1))
+                j = int(np.clip(idx[1], 0, cfg.shape[1] - 1))
+                k = int(np.clip(idx[2], 0, cfg.shape[2] - 1))
+                A_mid = A_vec[i, j, k, :]
+                flux += float(np.dot(A_mid, dl))
+            phase_fluxes[phase].append(polarity * flux)
+
+    # Fit fundamental: λ_p(θ) = a_p * cos(p*θ + φ_p)
+    elec_angles = cfg.pole_pairs * angles
+    amplitudes = []
+    for p in range(3):
+        # Sum across teeth at each angle: 6 values
+        vals = np.array([sum(phase_fluxes[p][j::n_angles])
+                         for j in range(n_angles)])
+        if np.max(np.abs(vals)) < 1e-12:
+            amplitudes.append(0.0)
+            continue
+        # Fit: a*cos(ea) + b*sin(ea) → amplitude = sqrt(a²+b²)
+        a = float(np.dot(vals, np.cos(elec_angles)) / n_angles * 2)
+        b = float(np.dot(vals, np.sin(elec_angles)) / n_angles * 2)
+        amplitudes.append(np.sqrt(a ** 2 + b ** 2))
+
+    # Return mean amplitude (should be equal for balanced winding)
+    return float(np.mean(amplitudes))
 
 
 def extract_electrical_parameters(

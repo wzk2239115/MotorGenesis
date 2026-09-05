@@ -182,36 +182,41 @@ def _trace_segment_faces(
 
     t_end = 1.0  # parametric end of segment
     max_iter = int(nx + ny + nz + 10)
+    tol = 1e-9
 
     for _ in range(max_iter):
         if not (0 <= i < nx and 0 <= j < ny and 0 <= k < nz):
             break
 
-        # Find next face crossing
-        axis = np.argmin(tMax)
-        t = tMax[axis]
-
-        if t > t_end:
+        # Find next face crossing(s) — handle ties (edge/corner crossings)
+        # by processing ALL axes with tMax within tol of the minimum.
+        t_min = min(tMax)
+        if t_min > t_end:
             break
 
-        # Deposit I on the crossed face
-        if axis == 0:  # x-face
-            face_i = i + 1 if step_x > 0 else i
-            if 0 <= face_i <= nx and 0 <= j < ny and 0 <= k < nz:
-                flux_x[face_i, j, k] += I * step_x
-            i += step_x
-        elif axis == 1:  # y-face
-            face_j = j + 1 if step_y > 0 else j
-            if 0 <= i < nx and 0 <= face_j <= ny and 0 <= k < nz:
-                flux_y[i, face_j, k] += I * step_y
-            j += step_y
-        else:  # z-face
-            face_k = k + 1 if step_z > 0 else k
-            if 0 <= i < nx and 0 <= j < ny and 0 <= face_k <= nz:
-                flux_z[i, j, face_k] += I * step_z
-            k += step_z
+        for axis in range(3):
+            if tMax[axis] > t_min + tol:
+                continue
+            if tMax[axis] > t_end:
+                continue
 
-        tMax[axis] += tDelta[axis]
+            if axis == 0:  # x-face
+                face_i = i + 1 if step_x > 0 else i
+                if 0 <= face_i <= nx and 0 <= j < ny and 0 <= k < nz:
+                    flux_x[face_i, j, k] += I * step_x
+                i += step_x
+            elif axis == 1:  # y-face
+                face_j = j + 1 if step_y > 0 else j
+                if 0 <= i < nx and 0 <= face_j <= ny and 0 <= k < nz:
+                    flux_y[i, face_j, k] += I * step_y
+                j += step_y
+            else:  # z-face
+                face_k = k + 1 if step_z > 0 else k
+                if 0 <= i < nx and 0 <= j < ny and 0 <= face_k <= nz:
+                    flux_z[i, j, face_k] += I * step_z
+                k += step_z
+
+            tMax[axis] += tDelta[axis]
 
 
 def _smooth_axis(arr: np.ndarray, axis: int) -> np.ndarray:
@@ -230,6 +235,60 @@ def _smooth_axis(arr: np.ndarray, axis: int) -> np.ndarray:
     sl_next[axis] = slice(2, None)
     out[tuple(sl)] = 0.25 * arr[tuple(sl_prev)] + 0.5 * arr[tuple(sl)] + 0.25 * arr[tuple(sl_next)]
     return out
+
+
+def face_flux_divergence(
+    cfg: MotorConfig3D,
+    registry: list[dict],
+    current_per_turn: float,
+    phase_amplitudes: np.ndarray,
+) -> float:
+    """Max relative divergence of the face-flux field.
+
+    For a closed loop, the face-flux DDA is exactly div-free.
+    Returns max|div(flux)| / max|flux| as a fraction.
+    """
+    nx, ny, nz = cfg.shape
+    dx, dy, dz = cfg.spacing
+    ox, oy, oz = cfg.origin
+
+    flux_x = [np.zeros((nx + 1, ny, nz), dtype=np.float64) for _ in range(3)]
+    flux_y = [np.zeros((nx, ny + 1, nz), dtype=np.float64) for _ in range(3)]
+    flux_z = [np.zeros((nx, ny, nz + 1), dtype=np.float64) for _ in range(3)]
+
+    for entry in registry:
+        phase = entry["phase"]
+        polarity = entry["polarity"]
+        pts = entry["points"]
+        if phase_amplitudes is not None:
+            amp = float(phase_amplitudes[phase])
+        else:
+            amp = 1.0
+        I = current_per_turn * amp * polarity
+        n_pts = len(pts)
+        for seg in range(n_pts):
+            p1 = pts[seg]
+            p2 = pts[(seg + 1) % n_pts]
+            _trace_segment_faces(
+                p1, p2, I,
+                ox, oy, oz, dx, dy, dz,
+                nx, ny, nz,
+                flux_x[phase], flux_y[phase], flux_z[phase],
+            )
+
+    # Compute face-flux divergence: div = net outflow / cell_vol
+    # For a closed loop, current conservation gives exactly zero.
+    cell_vol = dx * dy * dz
+    max_div = 0.0
+    max_flux = 0.0
+    for p in range(3):
+        fx, fy, fz = flux_x[p], flux_y[p], flux_z[p]
+        div = ((fx[1:] - fx[:-1]) + (fy[:, 1:] - fy[:, :-1]) +
+               (fz[:, :, 1:] - fz[:, :, :-1])) / cell_vol
+        max_div = max(max_div, float(np.max(np.abs(div))))
+        max_flux = max(max_flux, float(np.max(np.abs(fx))),
+                       float(np.max(np.abs(fy))), float(np.max(np.abs(fz))))
+    return max_div / max(max_flux / cell_vol, 1e-12)
 
 
 def centerline_resistance(registry: list[dict], rho_e: float = 1.68e-8) -> dict:

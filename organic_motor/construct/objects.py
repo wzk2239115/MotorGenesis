@@ -1404,29 +1404,25 @@ def _serpentine_centerline(
     zc: float,
     n_arch: int = 8,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """One continuous serpentine conductor through all bands of a tooth.
+    """Closed serpentine conductor: all turns SAME winding direction.
 
-    A TRUE helical serpentine: each turn is an OPEN "C" shape (no bottom
-    arch closes the loop).  The end of turn k connects directly to the
-    start of turn k+1 via a radial crossover.  The current direction
-    alternates each turn so the MMF adds constructively.
+    Every turn goes: up side A (-theta) → arch top → down side B (+theta).
+    The crossover from B-bottom of turn k to A-bottom of turn k+1 is at
+    a distinct z-layer below the stack (stacked staircase), preventing
+    self-intersection.  The path is CLOSED by a terminal return from the
+    last turn's B-bottom back to the first turn's A-bottom, making the
+    face-flux DDA exactly divergence-free.
 
-    Topology:
-        terminal → turn 0: up side A → arch top → down side B →
-        crossover (B bottom → B bottom of next band) →
-        turn 1: up side B → arch top (reversed) → down side A →
-        crossover (A bottom → A bottom of next band) →
-        turn 2: up side A → arch top → down side B → ...
-        → exit terminal
+    All turns push flux the SAME direction through the tooth — the 5th
+    harmonic (pole_pairs=5) adds constructively, giving ~100% of the
+    ideal N-turn MMF (not 14% as with alternating direction).
 
-    Every internal node has degree 2 (in + out); no closed loops, no
-    bypass branches.  The start point of turn k ≠ end point of turn k.
-
-    Returns ``(points, tangents, segment_turns)``.
+    Returns ``(points, _, segment_turns)``.
     """
     n_bands = len(r_k)
     all_pts = []
     turn_map = []
+    cross_z_step = 0.0004  # 0.4mm z offset per crossover layer
 
     for k in range(n_bands):
         r = r_k[k]
@@ -1435,43 +1431,52 @@ def _serpentine_centerline(
         thetas = np.linspace(-side_angle, side_angle, n_arch)
         cos_profile = (1.0 + np.cos(np.pi * thetas / side_angle)) * 0.5
 
-        if k % 2 == 0:
-            # Even turn: up side A (-), arch top, down side B (+)
-            # Start: side A bottom, End: side B bottom
-            pts = [[r * ca, -r * sa, -zc]]
-            pts.append([r * ca, -r * sa, zc])
-            for th, c in zip(thetas, cos_profile):
-                pts.append([r * np.cos(th), r * np.sin(th), zc + a * c])
-            pts.append([r * ca, r * sa, zc])
-            pts.append([r * ca, r * sa, -zc])
-        else:
-            # Odd turn: up side B (+), arch top (reversed), down side A (-)
-            # Start: side B bottom, End: side A bottom
-            pts = [[r * ca, r * sa, -zc]]
-            pts.append([r * ca, r * sa, zc])
-            for th, c in zip(reversed(thetas), reversed(cos_profile)):
-                pts.append([r * np.cos(th), r * np.sin(th), zc + a * c])
-            pts.append([r * ca, -r * sa, zc])
-            pts.append([r * ca, -r * sa, -zc])
+        # ALL turns: same direction — up side A, arch, down side B
+        pts = [[r * ca, -r * sa, -zc]]       # A bottom
+        pts.append([r * ca, -r * sa, zc])     # A top
+        for th, c in zip(thetas, cos_profile):
+            pts.append([r * np.cos(th), r * np.sin(th), zc + a * c])
+        pts.append([r * ca, r * sa, zc])     # B top
+        pts.append([r * ca, r * sa, -zc])    # B bottom
 
         if k > 0:
-            # Crossover: end of turn k-1 → start of turn k (radial bridge
-            # at z = -zc, different radii).  NO closed loop — direct
-            # end-to-start connection.
+            # Crossover: B-bottom of turn k-1 → A-bottom of turn k
+            # at z = -zc - k*cross_z_step (stacked below previous)
             prev_end = all_pts[-1]
             curr_start = pts[0]
-            n_cross = 3
+            cross_z = -zc - k * cross_z_step
+            n_cross = 4
             for j in range(1, n_cross):
                 s = j / n_cross
                 cx = prev_end[0] + s * (curr_start[0] - prev_end[0])
                 cy = prev_end[1] + s * (curr_start[1] - prev_end[1])
-                cz = prev_end[2] + s * (curr_start[2] - prev_end[2])
-                all_pts.append([cx, cy, cz])
+                # Dip down to cross_z then back up
+                z_interp = prev_end[2] + s * (curr_start[2] - prev_end[2])
+                z_dip = cross_z + (1.0 - abs(2.0 * s - 1.0)) * (z_interp - cross_z)
+                all_pts.append([cx, cy, z_dip])
                 turn_map.append(k - 1)
 
         for p in pts:
             all_pts.append(p)
             turn_map.append(k)
+
+    # Close the loop: B-bottom of last turn → A-bottom of first turn
+    # (terminal return at the lowest z layer)
+    last_end = all_pts[-1].copy()
+    first_start = all_pts[0].copy()
+    close_z = -zc - (n_bands + 1) * cross_z_step
+    n_close = 4
+    for j in range(1, n_close + 1):
+        s = j / n_close
+        cx = last_end[0] + s * (first_start[0] - last_end[0])
+        cy = last_end[1] + s * (first_start[1] - last_end[1])
+        z_interp = last_end[2] + s * (first_start[2] - last_end[2])
+        z_dip = close_z + (1.0 - abs(2.0 * s - 1.0)) * (z_interp - close_z)
+        all_pts.append([cx, cy, z_dip])
+        turn_map.append(n_bands - 1)
+    # Force exact closure: last point = first point
+    all_pts.append([first_start[0], first_start[1], first_start[2]])
+    turn_map.append(0)
 
     return np.array(all_pts, dtype=np.float64), np.array(turn_map, dtype=np.int32)
 
