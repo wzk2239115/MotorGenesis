@@ -290,20 +290,30 @@ def evaluate_verdicts(
 
     evaluated = [k for k in VERDICT_ORDER if verdicts[k]["passed"] is not None]
     failed = [k for k in VERDICT_ORDER if verdicts[k]["passed"] is False]
+    # Overall green requires every evaluated verdict to pass AND the
+    # three core verdicts (electromechanical, winding, structure) to be
+    # actually evaluated and passing.  None verdicts never hide a fail.
+    overall_passed = bool(
+        not failed
+        and verdicts["electromechanical"]["passed"] is True
+        and verdicts["winding"]["passed"] is True
+        and verdicts["structure"]["passed"] is True
+    )
+    # Feasibility: geometry-level gate for agent loop scoring when the
+    # expensive startup transient is not run.  Passes if no evaluated
+    # verdict fails AND winding + structure are evaluated and pass.
+    feasible = bool(
+        not failed
+        and verdicts["winding"]["passed"] is True
+        and verdicts["structure"]["passed"] is True
+    )
     return {
         "verdicts": {k: verdicts[k] for k in VERDICT_ORDER},
         "labels": VERDICT_LABELS,
         "evaluated": len(evaluated),
         "failed": failed,
-        # Overall green requires every evaluated verdict to pass AND the
-        # three core verdicts (electromechanical, winding, structure) to be
-        # actually evaluated and passing.  None verdicts never hide a fail.
-        "passed": bool(
-            not failed
-            and verdicts["electromechanical"]["passed"] is True
-            and verdicts["winding"]["passed"] is True
-            and verdicts["structure"]["passed"] is True
-        ),
+        "passed": overall_passed,
+        "feasible": feasible,
     }
 
 

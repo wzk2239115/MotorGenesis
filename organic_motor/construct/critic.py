@@ -94,4 +94,15 @@ def score_fields(
     metrics.update(geom)
     if netlist is not None:
         metrics["winding_netlist"] = netlist.summary()
+    # Engineering verdicts: wire evaluate_verdicts into metrics so the
+    # agent loop's verdict gate has an explicit passed/feasible signal.
+    from organic_motor.construct.verdicts import evaluate_verdicts
+    verdict_suite = evaluate_verdicts(
+        mf, cfg,
+        display_mf=geometry_mf,
+        display_cfg=geometry_cfg,
+    )
+    metrics["verdicts"] = verdict_suite
+    metrics["passed"] = verdict_suite["feasible"]
+    metrics["overall_passed"] = verdict_suite["passed"]
     return metrics

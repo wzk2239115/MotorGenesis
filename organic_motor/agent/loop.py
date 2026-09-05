@@ -45,12 +45,14 @@ class IterationResult:
 class RunResult:
     out_dir: Path
     iterations: list[IterationResult] = field(default_factory=list)
-    best_iter: int = 0
+    best_iter: int = -1          # -1 = no feasible candidate found
     best_obj: float = float("inf")
 
     @property
-    def best(self) -> IterationResult:
-        return self.iterations[self.best_iter] if self.iterations else None
+    def best(self) -> IterationResult | None:
+        if self.best_iter < 0 or not self.iterations:
+            return None
+        return self.iterations[self.best_iter]
 
 
 def _metrics_table(metrics: dict) -> str:
@@ -294,10 +296,13 @@ class AgentLoop:
                     code = self._heuristic_propose(code, metrics, i)
             except Exception as exc:
                 print(f"[agent] proposer failed ({exc}); keeping current code")
-        print(
-            f"[agent] loop done; best iter {result.best_iter} "
-            f"obj={result.best_obj:.4g}"
-        )
+        if result.best_iter >= 0:
+            print(
+                f"[agent] loop done; best iter {result.best_iter} "
+                f"obj={result.best_obj:.4g}"
+            )
+        else:
+            print("[agent] loop done; NO FEASIBLE candidate found")
         return result
 
     def _log(self, ir: IterationResult, result: RunResult) -> None:
@@ -306,7 +311,7 @@ class AgentLoop:
             print(f"  iter {ir.iter}: FAILED ({ir.elapsed:.0f}s)")
             print(f"    {ir.error.splitlines()[-1] if ir.error else ''}")
             return
-        marker = " *" if ir.iter == result.best_iter else ""
+        marker = " *" if ir.iter == result.best_iter and result.best_iter >= 0 else ""
         print(
             f"  iter {ir.iter}: obj={m.get('obj', float('nan')):.4g} "
             f"torque={m.get('torque', 0):.4g} "
@@ -320,15 +325,18 @@ class AgentLoop:
 
         Perturbs the StatorCellArray band count and arch slope so the
         loop exercises real parameter changes on the current baseline.
+        Each parameter is replaced in-place -- never append.
         """
         # Vary n_bands (5-9) and arch_slope (0.5-1.5)
         n_bands = 5 + (i % 5)
         arch_slope = 0.5 + 1.0 * (i % 3) / 2.0
-        code = self.baseline_code
-        code = code.replace("n_bands=7", f"n_bands={n_bands}")
-        code = code.replace("channel_wall=0.0003",
-                            f"channel_wall=0.0003, arch_slope={arch_slope:.3f}")
-        return code
+        new_code = self.baseline_code
+        new_code = new_code.replace("n_bands=7", f"n_bands={n_bands}")
+        new_code = new_code.replace("arch_slope=1.0", f"arch_slope={arch_slope:.3f}")
+        # Safety: assert no duplicate keyword in the call
+        assert new_code.count("arch_slope") <= 2, "duplicate arch_slope"  # 2 = build + magnetization
+        assert new_code.count("n_bands") <= 2, "duplicate n_bands"
+        return new_code
 
 
 def run_loop(
