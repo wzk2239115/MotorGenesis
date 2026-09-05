@@ -249,8 +249,9 @@ class AgentLoop:
             result.iterations.append(ir)
             obj = metrics.get("obj", float("inf"))
             # Verdict gate: a candidate can only be "best" if it passes
-            # the engineering verdicts (no short, no open circuit, etc.)
-            feasible = metrics.get("passed", True)
+            # engineering verdicts.  Missing verdict = FAIL (not pass).
+            # The critic must explicitly set "passed": True.
+            feasible = metrics.get("passed", False)
             if isinstance(feasible, list):
                 feasible = all(feasible)
             if feasible and obj < result.best_obj:

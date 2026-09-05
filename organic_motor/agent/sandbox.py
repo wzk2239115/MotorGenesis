@@ -58,6 +58,7 @@ from organic_motor.construct.objects import (
     SurfaceMagnets,
     DistributedWinding,
     Winding3D,
+    field_driven_motor,
 )
 from organic_motor.construct.fields_motor import (
     airgap_B,
@@ -148,6 +149,7 @@ def make_namespace(cfg: MotorConfig3D) -> dict:
         "FunctionalVoids": FunctionalVoids,
         "CoilNetlist": CoilNetlist,
         "StructuralContinuity": StructuralContinuity,
+        "field_driven_motor": field_driven_motor,
     }
 
 

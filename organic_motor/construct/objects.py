@@ -1906,7 +1906,12 @@ def baseline_motor(cfg: MotorConfig3D | None = None) -> Motor:
     return Motor(cfg or MotorConfig3D())
 
 
-def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
+def field_driven_motor(
+    cfg: MotorConfig3D | None = None,
+    n_bands: int = 7,
+    arch_slope: float = 1.0,
+    channel_wall: float = 0.0003,
+) -> Motor:
     """A motor built entirely from field-driven computational objects.
 
     P5 topology: the printed multi-material stator is now grown from
@@ -1929,7 +1934,8 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
         RotorCore(cfg),
         FieldDrivenMagnets(cfg),
         RotorSleeve(cfg),
-        StatorCellArray(cfg, n_bands=7, channel_wall=0.0003),
+        StatorCellArray(cfg, n_bands=n_bands, channel_wall=channel_wall,
+                        arch_slope=arch_slope),
         FunctionalVoids(cfg),
         StructuralContinuity(cfg),
     ])

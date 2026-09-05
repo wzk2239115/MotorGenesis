@@ -217,18 +217,14 @@ tangent contact.
 
 BASELINE_CODE = '''# LEAP 71 field-driven motor: StatorCellArray with swept serpentine
 # copper, arched end-turns, interface-only insulation, continuous
-# magnetic yoke, AM overhang constraint.  The rotor keeps the validated
-# radius budget (non-magnetic sleeve, 10-pole PM, 3mm air gap).
-# field_driven_motor() assembles all components in the correct order
-# with material priorities.  The agent should parameterise the cells,
-# not rebuild the assembly from scratch.
-from organic_motor.construct.objects import field_driven_motor
-
+# magnetic yoke, AM overhang constraint.  field_driven_motor() is
+# pre-exposed in the sandbox namespace -- no import needed.
+# Parameters below are the heuristic mutation targets.
 def build(cfg):
-    motor = field_driven_motor(cfg)
+    motor = field_driven_motor(cfg, n_bands=7, arch_slope=1.0, channel_wall=0.0003)
     return motor.build()
 
 def magnetization(cfg):
-    motor = field_driven_motor(cfg)
+    motor = field_driven_motor(cfg, n_bands=7, arch_slope=1.0, channel_wall=0.0003)
     return motor.magnetization()
 '''
