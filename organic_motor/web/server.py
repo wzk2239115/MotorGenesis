@@ -335,9 +335,12 @@ def _run_simulation_thread(
         mf = _mf_from_artifact(artifact, cfg)
 
         from organic_motor.construct.transient_bridge import (
-            extract_electrical_parameters,
+            extract_electrical_parameters, extract_fea_flux_linkage,
         )
-        electrical = extract_electrical_parameters(mf, cfg)
+
+        sim["status"] = "extracting_flux"
+        flux_fea = extract_fea_flux_linkage(mf, cfg, artifact.magnetization)
+        electrical = extract_electrical_parameters(mf, cfg, flux_linkage_fea=flux_fea)
 
         from organic_motor.experiments.motor3d_powered import (
             Powered3DSettings, compute_powered_maps, run_powered_transient,
@@ -351,6 +354,11 @@ def _run_simulation_thread(
         load_torque = float(settings.get("load_torque", 0.005))
         load_viscous = float(settings.get("load_viscous", 1.0e-4))
         rotor_inertia = float(settings.get("rotor_inertia", 2.0e-4))
+
+        if electrical.flux_linkage < 1e-8:
+            sim["status"] = "rejected"
+            sim["error"] = "flux_linkage ~0 — FEA extraction failed or winding not connected"
+            return
 
         p_settings = Powered3DSettings(
             phase_voltage_peak=voltage,
