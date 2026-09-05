@@ -15,7 +15,7 @@ from organic_motor.construct.morphology import (
 
 
 def _cfg(**ov):
-    d = dict(shape=(96, 96, 58), excitation_mode="impressed",
+    d = dict(shape=(224, 224, 136), excitation_mode="impressed",
              filt_radius=0.0, projection_beta=0.0)
     d.update(ov)
     return MotorConfig3D(**d)

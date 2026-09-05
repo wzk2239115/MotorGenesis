@@ -57,19 +57,18 @@ class HoneycombGenerator:
         y = Y - cy
         R = np.sqrt(x**2 + y**2)
 
-        D = self.cell_size  # flat-to-flat
+        D = self.cell_size  # flat-to-flat distance
         ir = D * 0.5        # inradius (center to edge midpoint)
-        # Hex grid: rows offset by D*sqrt(3)/4, row spacing = D*3/4
-        # Using the "offset coordinate" system for pointy-top hexagons
-        h = D * np.sqrt(3) / 2   # cell width (flat-to-flat horizontal for pointy-top)
-        v = D * 3 / 4            # vertical spacing between rows
+        # Pointy-top hex grid:
+        #   horizontal spacing between columns = D (flat-to-flat)
+        #   vertical spacing between rows = D * sqrt(3) / 2
+        #   odd rows offset by D/2
+        h = D                       # horizontal column spacing
+        v = D * np.sqrt(3) / 2      # vertical row spacing
 
-        # Convert to axial-ish coordinates
         row = y / v
         row_int = np.round(row)
-        x_offset = (np.mod(row_int, 2) - 0.5) * h if False else np.where(
-            np.mod(row_int, 2) > 0, h * 0.5, 0.0
-        )
+        x_offset = np.where(np.mod(row_int, 2) > 0, h * 0.5, 0.0)
         col = (x - x_offset) / h
         col_int = np.round(col)
 

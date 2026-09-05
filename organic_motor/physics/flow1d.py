@@ -44,8 +44,11 @@ class FlowResult(NamedTuple):
     heat_removed_W: float
     temp_rise_K: float
     outlet_temp_C: float
+    wall_temp_C: float
+    fluid_avg_temp_C: float
     nusselt: float
     h_conv_W_m2K: float
+    surface_area_m2: float
     applicable: bool
     notes: str
 
@@ -175,11 +178,34 @@ def evaluate_channel(
     nu = nusselt_number(re, PR_WATER, dean)
     h_conv = nu * K_WATER / diameter_m
 
-    # Temperature rise
-    if m_dot > 1e-10:
-        dT = heat_load_W / (m_dot * CP_WATER)
+    # Wall-fluid heat exchange model:
+    # Q_actual = h * A_surface * (T_wall - T_fluid_avg)
+    # T_fluid_avg = (T_inlet + T_outlet) / 2
+    # Energy balance: Q = m_dot * cp * (T_outlet - T_inlet)
+    # Coupled: Q = h * pi*D*L * (T_wall - T_fluid_avg) = m_dot * cp * dT
+    # Solving for T_wall:
+    #   Q = m_dot * cp * dT  (energy into fluid)
+    #   Q = h * pi*D*L * (T_wall - (T_in + T_out)/2)
+    #   dT = T_out - T_in
+    #   T_out = T_in + Q/(m_dot*cp)
+    #   T_fluid_avg = T_in + Q/(2*m_dot*cp)
+    #   T_wall = T_fluid_avg + Q/(h*pi*D*L)
+
+    surface_area = math.pi * diameter_m * length_m
+
+    if m_dot > 1e-10 and h_conv > 0 and surface_area > 0:
+        # Actual heat transfer: solve coupled system
+        # Assume heat_load is the heat available at the wall
+        Q_actual = heat_load_W
+        dT = Q_actual / (m_dot * CP_WATER)
+        T_fluid_avg = inlet_temp_C + dT / 2
+        T_wall = T_fluid_avg + Q_actual / (h_conv * surface_area)
+        heat_transferred = Q_actual
     else:
         dT = 999.0
+        T_wall = 999.0
+        T_fluid_avg = inlet_temp_C
+        heat_transferred = 0.0
 
     outlet_temp = inlet_temp_C + dT
 
@@ -193,7 +219,8 @@ def evaluate_channel(
         applicable = False
         notes.append("Re > 1e5 — Blasius not valid")
     if channel_type == "helical" and dean > 1000:
-        notes.append(f"De={dean:.0f} > 1000 — Ito may not apply")
+        applicable = False
+        notes.append(f"De={dean:.0f} > 1000 — Ito correlation not valid")
     if not notes:
         notes.append("all correlations within applicability range")
 
@@ -207,11 +234,14 @@ def evaluate_channel(
         flow_rate_kg_s=m_dot,
         pressure_drop_Pa=dp,
         pump_power_W=pump_power_W,
-        heat_removed_W=heat_load_W,
+        heat_removed_W=heat_transferred,
         temp_rise_K=dT,
         outlet_temp_C=outlet_temp,
+        wall_temp_C=T_wall,
+        fluid_avg_temp_C=T_fluid_avg,
         nusselt=nu,
         h_conv_W_m2K=h_conv,
+        surface_area_m2=surface_area,
         applicable=applicable,
         notes="; ".join(notes),
     )

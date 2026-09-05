@@ -87,6 +87,37 @@ class TestChannelEvaluation:
             f"Q={r.heat_removed_W}W, m×cp×ΔT={Q_calc}W"
         )
 
+    def test_wall_temp_above_fluid_temp(self):
+        """Wall temperature must be higher than average fluid temperature."""
+        r = evaluate_channel("straight", 0.080, 0.003, 0.5,
+                              heat_load_W=10.0)
+        assert r.wall_temp_C > r.fluid_avg_temp_C, (
+            f"wall={r.wall_temp_C:.2f}C must be > fluid_avg={r.fluid_avg_temp_C:.2f}C"
+        )
+
+    def test_h_affects_wall_temp(self):
+        """Changing h_conv (via channel diameter) must change wall temperature."""
+        r_small = evaluate_channel("straight", 0.080, 0.002, 0.5,
+                                    heat_load_W=10.0)
+        r_large = evaluate_channel("straight", 0.080, 0.005, 0.5,
+                                    heat_load_W=10.0)
+        assert r_small.wall_temp_C != r_large.wall_temp_C, (
+            "different diameter (different h) must give different wall temps"
+        )
+
+    def test_de_gt_1000_makes_inapplicable(self):
+        """Dean number > 1000 must set applicable=False."""
+        r = evaluate_channel("helical", 0.300, 0.003, 2.0,
+                              helix_radius_m=0.045)
+        if r.reynolds > 0 and r.channel_type == "helical":
+            # Check: if De > 1000, must be inapplicable
+            import math
+            dean = r.reynolds * math.sqrt(0.003 / (2 * 0.045))
+            if dean > 1000:
+                assert not r.applicable, (
+                    f"De={dean:.0f} > 1000 but applicable={r.applicable}"
+                )
+
     def test_applicability_flag(self):
         """Transitional flow must be flagged."""
         # Find a case in transitional range
