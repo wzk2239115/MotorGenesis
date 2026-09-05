@@ -2,9 +2,60 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from organic_motor.config import MotorConfig
+
+
+# ---------------------------------------------------------------------------
+# Frozen motor specification — prevents pole/slot/winding drift
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MotorSpec:
+    """Immutable motor specification shared by geometry, netlist, FEA and startup.
+
+    This exists so the pole count, winding table and phase sequence cannot
+    silently change between commits.  All subsystems MUST read from the
+    same spec, not hard-code their own values.
+    """
+    n_slots: int = 12
+    pole_pairs: int = 5  # 10 poles (12s10p concentrated winding)
+    n_phases: int = 3
+    winding_factor: float = 0.933  # 12s10p kw
+    coil_span: int = 1  # concentrated (one tooth per coil)
+
+    @property
+    def n_poles(self) -> int:
+        return 2 * self.pole_pairs
+
+    @property
+    def slots_per_pole_per_phase(self) -> float:
+        return self.n_slots / (self.n_poles * self.n_phases)
+
+    @property
+    def slot_pitch_rad(self) -> float:
+        return 2.0 * 3.141592653589793 / self.n_slots
+
+    @property
+    def electrical_to_mechanical(self) -> float:
+        return self.pole_pairs
+
+    def phase_of_slot(self, slot: int) -> int:
+        """12s10p phase assignment: A C B A C B A C B A C B."""
+        # Standard 12s10p: slots 0,3,6,9 = phase A; 1,4,7,10 = C; 2,5,8,11 = B
+        return [0, 2, 1][slot % 3]
+
+    def polarity_of_slot(self, slot: int) -> int:
+        """Alternating polarity within each phase."""
+        phase = self.phase_of_slot(slot)
+        # Count how many previous slots of the same phase
+        count = sum(1 for s in range(slot) if self.phase_of_slot(s) == phase)
+        return 1 if count % 2 == 0 else -1
+
+
+# Singleton instance — import this everywhere
+MOTOR_SPEC = MotorSpec()
 
 
 @dataclass

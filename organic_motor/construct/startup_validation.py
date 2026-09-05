@@ -258,18 +258,15 @@ def validate_startup(
     phase_inductance = max(electrical.phase_inductance, 1.0e-7)
     flux_linkage = electrical.flux_linkage
     if flux_linkage < 1e-8:
-        result = MultiAngleStartupResult(
+        return MultiAngleStartupResult(
             n_angles=n_angles,
+            passed=False,
             settings={
                 "flux_linkage": flux_linkage,
                 "error": "flux_linkage ~0 — FEA extraction failed or winding "
                          "not correctly connected",
             },
         )
-        result.passed = [False] * n_angles
-        result.reasons = ["zero flux linkage"] * n_angles
-        result.summary = "FAILED: flux linkage is zero — check centerline topology"
-        return result
 
     period = 2.0 * np.pi / cfg.pole_pairs
     initial_angles = np.linspace(0, period, n_angles, endpoint=False)

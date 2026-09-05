@@ -140,15 +140,17 @@ def extract_fea_flux_linkage(
     elec_angles = cfg.pole_pairs * angles
     amplitudes = []
     for p in range(3):
-        # Sum across teeth at each angle: 6 values
-        vals = np.array([sum(phase_fluxes[p][j::n_angles])
-                         for j in range(n_angles)])
-        if np.max(np.abs(vals)) < 1e-12:
+        # Data layout: phase_fluxes[p] = [angle0_tooth0, angle0_tooth1, ...,
+        #   angle1_tooth0, ...].  Reshape to (n_angles, n_teeth_per_phase).
+        raw = np.array(phase_fluxes[p])
+        n_teeth = len(raw) // n_angles
+        flux_by_angle = raw.reshape(n_angles, n_teeth).sum(axis=1)  # (n_angles,)
+        if np.max(np.abs(flux_by_angle)) < 1e-12:
             amplitudes.append(0.0)
             continue
         # Fit: a*cos(ea) + b*sin(ea) → amplitude = sqrt(a²+b²)
-        a = float(np.dot(vals, np.cos(elec_angles)) / n_angles * 2)
-        b = float(np.dot(vals, np.sin(elec_angles)) / n_angles * 2)
+        a = float(np.dot(flux_by_angle, np.cos(elec_angles)) / n_angles * 2)
+        b = float(np.dot(flux_by_angle, np.sin(elec_angles)) / n_angles * 2)
         amplitudes.append(np.sqrt(a ** 2 + b ** 2))
 
     # Return mean amplitude (should be equal for balanced winding)

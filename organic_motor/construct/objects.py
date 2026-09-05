@@ -1450,9 +1450,9 @@ def _serpentine_centerline(
                 s = j / n_cross
                 cx = prev_end[0] + s * (curr_start[0] - prev_end[0])
                 cy = prev_end[1] + s * (curr_start[1] - prev_end[1])
-                # Dip down to cross_z then back up
                 z_interp = prev_end[2] + s * (curr_start[2] - prev_end[2])
-                z_dip = cross_z + (1.0 - abs(2.0 * s - 1.0)) * (z_interp - cross_z)
+                # sin(π*s) gives max dip at midpoint, 0 at endpoints
+                z_dip = z_interp - np.sin(np.pi * s) * (z_interp - cross_z)
                 all_pts.append([cx, cy, z_dip])
                 turn_map.append(k - 1)
 
@@ -1471,7 +1471,7 @@ def _serpentine_centerline(
         cx = last_end[0] + s * (first_start[0] - last_end[0])
         cy = last_end[1] + s * (first_start[1] - last_end[1])
         z_interp = last_end[2] + s * (first_start[2] - last_end[2])
-        z_dip = close_z + (1.0 - abs(2.0 * s - 1.0)) * (z_interp - close_z)
+        z_dip = z_interp - np.sin(np.pi * s) * (z_interp - close_z)
         all_pts.append([cx, cy, z_dip])
         turn_map.append(n_bands - 1)
     # Force exact closure: last point = first point
@@ -1606,11 +1606,17 @@ class StatorCell:
         ps[phase] = np.minimum(ps[phase], copper_sdf)
         mf.metadata["winding_phase_sdf"] = ps
 
-        # Register ONE centerline entry per tooth (the continuous path),
-        # tagged with turn indices via turn_map.  The line-current depositor
-        # will split this into per-turn segments.
+        # Register centerline for line-current deposition.
+        # The PHYSICAL conductor is the serpentine without the terminal
+        # return — it's an open path with two terminal ends.
+        # The SOLVER CLOSURE (terminal return) is stored separately so the
+        # face-flux DDA can deposit a div-free current source.
+        # The physical copper geometry is the swept band along all points
+        # EXCEPT the terminal return (which is a virtual closing path).
+        physical_pts = pts[:-5]  # exclude terminal return + closure point
         mf.metadata.setdefault("centerline_registry", []).append({
-            "points": pts.copy(),
+            "points": pts.copy(),  # full closed path for solver
+            "physical_points": physical_pts,  # open path for geometry
             "turn_map": turn_map.copy(),
             "phase": phase,
             "polarity": polarity,
@@ -1618,6 +1624,7 @@ class StatorCell:
             "tooth": self.tooth_index,
             "cross_section_area": float(cross_area),
             "band_radius": float(self.band_radius),
+            "solver_closure": True,  # terminal return is virtual, not physical
         })
         return mf
 
