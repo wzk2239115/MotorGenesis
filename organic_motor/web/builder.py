@@ -106,7 +106,8 @@ def apply_view(vol: VoxelVolume, view: str) -> VoxelVolume:
     y = oy + dy * np.arange(ny, dtype=np.float32)
     X, Y = np.meshgrid(x, y, indexing="ij")
     r = np.sqrt(X**2 + Y**2)[..., None]
-    rotor_side = (r < 0.0295).astype(np.float32)
+    rotor_cutoff = float(np.max(r[vol.pm > 0.1])) if vol.pm.max(initial=0.0) > 0.1 else 0.0295
+    rotor_side = (r < rotor_cutoff).astype(np.float32)
     iron = vol.iron * (1.0 - rotor_side)
     return VoxelVolume(
         iron=iron, pm=np.zeros_like(vol.pm), spacing=vol.spacing, origin=vol.origin,

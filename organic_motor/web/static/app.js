@@ -512,14 +512,17 @@ $("sliceIndex").addEventListener("input", () => { sliceState.index = parseInt($(
 // Render loop
 // ---------------------------------------------------------------------------
 let last = performance.now();
+let frameCount = 0;
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
   renderer.render(scene, camera);
+  frameCount++;
   const now = performance.now();
   if (now - last > 500) {
-    $("fpsHud").textContent = `${Math.round(1000 / (now - last))} fps`;
+    $("fpsHud").textContent = `${Math.round(frameCount * 1000 / (now - last))} fps`;
     last = now;
+    frameCount = 0;
   }
 }
 animate();

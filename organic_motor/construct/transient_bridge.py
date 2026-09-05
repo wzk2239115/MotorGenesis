@@ -54,6 +54,11 @@ def load_constructed_checkpoint(
         rho_air = np.asarray(data["rho_air"], dtype=np.float32)
         magnetization = np.asarray(data.get("magnetization", np.zeros((3,) + cfg.shape, dtype=np.float32)))
 
+        meta = {}
+        for key in data.files:
+            if key.startswith("metric__"):
+                meta[key[8:]] = float(np.asarray(data[key]).ravel()[0])
+
     logits = np.zeros((4,) + cfg.shape, dtype=np.float32)
     logits[0] = rho_air * 10 - 5
     logits[1] = rho_iron * 10 - 5
@@ -61,11 +66,6 @@ def load_constructed_checkpoint(
     logits[3] = rho_pm * 10 - 5
 
     rotor_logits = np.asarray(rho_iron > 0.3, dtype=np.float32) * 10 - 5
-
-    meta = {}
-    for key in data.files:
-        if key.startswith("metric__"):
-            meta[key[8:]] = float(np.asarray(data[key]).ravel()[0])
 
     return jnp.asarray(logits), jnp.asarray(rotor_logits), jnp.asarray(magnetization), meta
 

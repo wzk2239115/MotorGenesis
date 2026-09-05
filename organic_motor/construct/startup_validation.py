@@ -134,10 +134,15 @@ def run_single_startup(
         if fields is not None:
             realized = fields
 
+            centerline_registry = None
+            if hasattr(fields, "metadata"):
+                centerline_registry = fields.metadata.get("centerline_registry")
+
             def phase_solver(single, angle, amplitudes):
                 return forward3d_fields(
                     cfg, realized, magnetization, [angle], single,
                     phase_amplitudes=amplitudes,
+                    centerline_registry=centerline_registry,
                 )
 
             maps_kwargs["phase_solver"] = phase_solver
@@ -393,6 +398,35 @@ def validate_startup(
     return result
 
 
+def _logits_from_densities(artifact, cfg):
+    """Convert ModelArtifact densities to logits for the powered transient."""
+    import jax.numpy as jnp
+    d = artifact.densities
+    logits = np.stack([
+        d.get("rho_air", np.zeros(cfg.shape, np.float32)),
+        d["rho_iron"],
+        d.get("rho_copper", np.zeros(cfg.shape, np.float32)),
+        d["rho_pm"],
+    ]).astype(np.float32) * 10.0 - 5.0
+    return jnp.asarray(logits)
+
+
+def _mf_from_artifact(artifact, cfg):
+    """Reconstruct a minimal MaterialField with centerline_registry from artifact."""
+    from organic_motor.construct.material import MaterialField
+    from organic_motor.construct.field import SDFVoxelField
+    mf = MaterialField(shape=cfg.shape, spacing=cfg.spacing, origin=cfg.origin)
+    for name in ("iron", "copper", "pm", "insulator", "coolant"):
+        key = f"rho_{name}"
+        if key in artifact.densities:
+            arr = artifact.densities[key]
+            sdf = (0.5 - arr).astype(np.float32)
+            mf.add(SDFVoxelField(sdf, cfg.spacing, cfg.origin), name, priority=False)
+    if artifact.centerline_registry:
+        mf.metadata["centerline_registry"] = artifact.centerline_registry
+    return mf
+
+
 def constructed_design_from_mf(mf, cfg: MotorConfig3D, mag=None):
     """Convert a built MaterialField (+ magnetization) to powered-transient inputs."""
     from organic_motor.geometry.domain3d import domain_masks3d
@@ -415,12 +449,25 @@ def validate_from_checkpoint(
     n_angles: int = 4,
     steps: int = 8000,
 ) -> MultiAngleStartupResult:
-    """Load a constructed checkpoint and run startup validation."""
-    from organic_motor.construct.transient_bridge import load_constructed_checkpoint
+    """Load a constructed checkpoint and run startup validation.
 
-    logits, rotor_logits, magnetization, _meta = load_constructed_checkpoint(
-        cfg, checkpoint_path
+    Recovers centerline_registry from the NPZ if present, so the solver
+    uses line-current deposition instead of coarse rho_copper fallback.
+    """
+    from organic_motor.construct.model_artifact import ModelArtifact
+
+    artifact = ModelArtifact.load(Path(checkpoint_path).parent.parent)
+    logits, rotor_logits, magnetization = (
+        _logits_from_densities(artifact, cfg),
+        None,
+        jnp.asarray(artifact.magnetization),
     )
+    if artifact.has_magnetization and artifact.has_centerlines:
+        mf = _mf_from_artifact(artifact, cfg)
+        return validate_startup(
+            cfg, logits, rotor_logits, magnetization,
+            n_angles=n_angles, steps=steps, mf=mf,
+        )
     return validate_startup(
         cfg, logits, rotor_logits, magnetization,
         n_angles=n_angles, steps=steps,

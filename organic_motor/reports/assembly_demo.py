@@ -123,26 +123,25 @@ def build_motor_with_assembly(cfg: MotorConfig3D | None = None) -> tuple:
     return mf, cfg
 
 
-def export_checkpoint(mf, cfg, out_dir: Path):
-    """Save MaterialField as NPZ checkpoint for web viewer."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir = out_dir / "checkpoints"
-    ckpt_dir.mkdir(exist_ok=True)
+def export_checkpoint(mf, cfg, out_dir: Path, motor=None):
+    """Save MaterialField as versioned ModelArtifact for web viewer + simulation.
 
-    vol = mf.to_volume()
-    npz_path = ckpt_dir / "step_000000.npz"
-    np.savez(
-        npz_path,
-        spacing=np.array(cfg.spacing, dtype=np.float32),
-        origin=np.array(cfg.origin, dtype=np.float32),
-        rho_iron=vol.iron.astype(np.float32),
-        rho_pm=vol.pm.astype(np.float32),
-        rho_copper=vol.copper.astype(np.float32) if vol.copper is not None else np.zeros(cfg.shape, np.float32),
-        rho_air=vol.air.astype(np.float32) if vol.air is not None else np.zeros(cfg.shape, np.float32),
-        rho_coolant=vol.coolant.astype(np.float32) if vol.coolant is not None else np.zeros(cfg.shape, np.float32),
-        rho_insulator=vol.insulator.astype(np.float32) if vol.insulator is not None else np.zeros(cfg.shape, np.float32),
-    )
-    print(f"  Checkpoint saved: {npz_path}")
+    If motor is provided, saves magnetization and motion groups too.
+    """
+    from organic_motor.construct.model_artifact import ModelArtifact
+
+    if motor is not None:
+        artifact = ModelArtifact.from_motor(motor, mf, cfg)
+    else:
+        artifact = ModelArtifact.from_material_field(mf, cfg)
+
+    npz_path = artifact.save(out_dir)
+    print(f"  Artifact saved: {npz_path}")
+    print(f"  Design hash: {artifact.design_hash}")
+    print(f"  Magnetization: {'yes' if artifact.has_magnetization else 'no'}")
+    print(f"  Centerlines: {len(artifact.centerline_registry)}")
+    can_run, reasons = artifact.can_energize()
+    print(f"  Can energize: {can_run}" + (f" ({'; '.join(reasons)})" if reasons else ""))
     return npz_path
 
 
@@ -441,9 +440,11 @@ if __name__ == "__main__":
     if "--full" in sys.argv or "--motor" in sys.argv:
         print("=== MOTOR + ASSEMBLY (full) ===")
         cfg = MotorConfig3D(shape=(96, 96, 58))
-        mf, cfg = build_motor_with_assembly(cfg)
+        from organic_motor.construct.objects import field_driven_motor
+        motor = field_driven_motor(cfg)
+        mf = motor.build()
         out_dir = Path(__file__).parent.parent / "out" / "assembly"
-        export_checkpoint(mf, cfg, out_dir)
+        export_checkpoint(mf, cfg, out_dir, motor=motor)
         print(f"\n  Materials: {mf.materials_present()}")
         print("  DONE — open web viewer and select 'assembly' run")
     else:

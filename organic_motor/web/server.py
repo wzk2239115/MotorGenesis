@@ -97,7 +97,7 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
                      "startup_quick/startup.json"):
             candidate = run_dir / name
             if not candidate.is_file():
-                candidate = run_dir.parent / name / "startup.json"
+                candidate = run_dir.parent / name
             if candidate.is_file():
                 return json.loads(candidate.read_text(encoding="utf-8"))
         raise HTTPException(status_code=404, detail="no startup validation for this run")
