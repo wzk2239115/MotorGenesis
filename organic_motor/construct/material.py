@@ -149,4 +149,4 @@ class MaterialField:
         )
 
     def materials_present(self) -> list[str]:
-        return [m for m in MATERIALS if m in self.sdfs]
+        return [m for m in (*MATERIALS, *AUX_MATERIALS) if m in self.sdfs]

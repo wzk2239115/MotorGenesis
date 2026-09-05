@@ -1,0 +1,43 @@
+{
+  "config": {
+    "shape": [
+      224,
+      224,
+      136
+    ],
+    "spacing_mm": [
+      0.6278,
+      0.6278,
+      0.7407
+    ],
+    "r_support_inner_mm": 44.0,
+    "r_support_outer_mm": 49.0,
+    "r_wall_inner_mm": 50.0,
+    "r_wall_outer_mm": 52.00000000000001
+  },
+  "voxels": {
+    "honeycomb": 111216,
+    "helix_void": 28222,
+    "wall": 146520,
+    "ports": 476
+  },
+  "audit": {
+    "honeycomb_in_air_gap": 0,
+    "honeycomb_in_air_gap_pass": true,
+    "honeycomb_in_winding": 0,
+    "honeycomb_in_winding_pass": true,
+    "coolant_in_air_gap": 0,
+    "coolant_in_air_gap_pass": true,
+    "coolant_in_winding": 0,
+    "coolant_in_winding_pass": true,
+    "wall_continuous": true,
+    "coolant_components": 2,
+    "coolant_connectivity_pass": true,
+    "materials": [
+      "iron"
+    ],
+    "vol_iron": 247629,
+    "vol_coolant": 28694
+  },
+  "timestamp": "2026-09-06 04:58:20"
+}
