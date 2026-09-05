@@ -34,7 +34,9 @@ from organic_motor.construct.startup_validation import (
     constructed_design_from_mf,
     validate_startup,
 )
-from organic_motor.construct.transient_bridge import extract_electrical_parameters
+from organic_motor.construct.transient_bridge import (
+    extract_electrical_parameters, extract_fea_flux_linkage,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -191,7 +193,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     n_tpc = mf.metadata.get("winding_n_turns_per_cell", 1)
     setattr(cfg, "_n_turns_per_cell", n_tpc)
 
-    elec = extract_electrical_parameters(mf, cfg)
+    # FEA flux linkage from PM-only solve (replaces 1T default)
+    psi_fea = extract_fea_flux_linkage(mf, cfg, mag)
+    elec = extract_electrical_parameters(mf, cfg, flux_linkage_fea=psi_fea)
     print("[startup] electrical parameters from geometry:")
     print(f"  R  = {elec.phase_resistance:.4g} ohm")
     print(f"  L  = {elec.phase_inductance:.4g} H")

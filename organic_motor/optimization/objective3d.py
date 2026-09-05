@@ -502,9 +502,8 @@ def _forward3d_core(
                 ea = float(electrical_angle)
                 offs = _np.array([0.0, 2.0 * _np.pi / 3.0, 4.0 * _np.pi / 3.0])
                 amps = _np.cos(ea - offs)
-            I_per_turn = float(cfg.current_density_peak) * _np.pi * (
-                centerline_registry[0]["band_radius"] ** 2
-            )
+            I_per_turn = float(cfg.current_density_peak) * \
+                centerline_registry[0]["cross_section_area"]
             J_np, phase_J_np = deposit_centerline_currents(
                 cfg, centerline_registry, I_per_turn, amps,
             )

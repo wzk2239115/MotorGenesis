@@ -66,8 +66,14 @@ def verify_phase_connectivity(
     phase_masks = []
 
     for i, name in enumerate(phase_names):
+        copper_sdf = mf.sdfs.get("copper")
         if phase_sdf is not None:
+            # Use phase ownership, but intersect with FINAL copper SDF
+            # (post-Boolean with insulation, coolant, etc.) so we count
+            # only copper that actually exists in the final geometry.
             phase_copper = np.asarray(phase_sdf[i]) < 0.0
+            if copper_sdf is not None:
+                phase_copper = phase_copper & (copper_sdf.sdf < 0.0)
         else:
             belts = netlist.phase_belts_3d(cfg)
             copper_sdf = mf.sdfs.get("copper")

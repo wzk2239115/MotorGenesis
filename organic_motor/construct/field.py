@@ -427,15 +427,23 @@ def polyline_ribbon_sdf(
                 w_safe = np.where(w_norm < 1e-10, 1.0, w_norm)
                 wx_f, wy_f, wz_f = wx / w_safe, wy / w_safe, wz / w_safe
             d_wid = disp_x * wx_f + disp_y * wy_f + disp_z * wz_f
-            # Inside segment: 2D elliptical cross-section SDF
-            # At endpoints: 3D ellipsoidal cap (tangent component uses r_cap)
             d_tan = disp_x * d_hat[0] + disp_y * d_hat[1] + disp_z * d_hat[2]
-            ellip_2d = np.sqrt((d_rad / ht) ** 2 + (d_wid / hw) ** 2)
-            ellip_3d = np.sqrt((d_rad / ht) ** 2 + (d_wid / hw) ** 2 + (d_tan / r_cap) ** 2)
+
+            # METRIC SDF: anisotropic scaling so distance is in meters.
+            # Scale radial displacement to width-units, then Euclidean distance.
+            # Boundary: ellipse with semi-axes ht (radial), hw (tangential).
+            # SDF = sqrt((d_rad * hw/ht)² + d_wid²) - hw  [meters]
+            d_rad_s = d_rad * (hw / ht)
+            if np.isscalar(d_rad_s):
+                d_rad_s = np.full_like(d_wid, d_rad_s)
+            perp_2d = np.sqrt(d_rad_s ** 2 + d_wid ** 2)
+            # 3D cap at endpoints: add tangent component scaled to width-units
+            d_tan_s = d_tan * (hw / r_cap)
+            perp_3d = np.sqrt(d_rad_s ** 2 + d_wid ** 2 + d_tan_s ** 2)
             seg_sdf = np.where(
                 at_end | near_axis,
-                (ellip_3d - 1.0).astype(np.float32),
-                (ellip_2d - 1.0).astype(np.float32),
+                (perp_3d - hw).astype(np.float32),
+                (perp_2d - hw).astype(np.float32),
             )
 
         sdf[i0:i1, j0:j1, k0:k1] = np.minimum(sdf[i0:i1, j0:j1, k0:k1], seg_sdf)

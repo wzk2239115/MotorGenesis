@@ -73,10 +73,17 @@ def load_constructed_checkpoint(
 def extract_fea_flux_linkage(
     mf, cfg: MotorConfig3D, magnetization_raw=None,
 ) -> float:
-    """Run a PM-only Maxwell solve (zero current) and extract the real
-    air-gap flux density, then compute flux linkage.
+    """Run a PM-only Maxwell solve (zero current) and extract flux linkage
+    by integrating the vector potential along the winding centerlines.
 
-    Returns flux_linkage [Wb] from the actual FEA field, not a 1 T default.
+    λ = Σ polarity × ∮ A · dl  (per phase, averaged over 3 phases)
+
+    This is the correct method for a radial-flux motor: the PM field
+    produces A in the z-direction, and the winding conductors run
+    axially (along z) in the active region.  The integral captures the
+    full winding distribution, not just a point sample of B.
+
+    Returns flux_linkage [Wb] from the actual FEA field.
     """
     import jax.numpy as jnp
     import numpy as np
@@ -90,36 +97,41 @@ def extract_fea_flux_linkage(
         phase_amplitudes=jnp.zeros(3),
         centerline_registry=mf.metadata.get("centerline_registry"),
     )
-    B = np.asarray(result.flux_density)  # (nx, ny, nz, 3)
-
-    # Air gap region: between rotor outer and stator inner, midplane z
-    nx, ny, nz = cfg.shape
-    dx, dy, dz = cfg.spacing
-    ox, oy, oz = cfg.origin
-    x = ox + dx * np.arange(nx)
-    y = oy + dy * np.arange(ny)
-    X, Y = np.meshgrid(x, y, indexing="ij")
-    r = np.sqrt(X**2 + Y**2)
-    cz = cfg.center[2]
-    kz = int(round((cz - oz) / dz))
-    gap = (r >= cfg.R_rotor + cfg.pole_pairs * 0 and r <= cfg.R_stator_inner) if hasattr(cfg, 'R_rotor') else (r >= 0.0275) & (r <= 0.0305)
-    if not gap.any():
-        gap = (r >= 0.027) & (r <= 0.031)
-    Bz_gap = B[:, :, kz, 2]
-    b_gap_mean = float(np.mean(np.abs(Bz_gap[gap]))) if gap.any() else 0.0
-
-    from organic_motor.construct.winding_netlist import CoilNetlist
-    netlist = mf.metadata.get("winding_netlist") if hasattr(mf, "metadata") else None
-    if not isinstance(netlist, CoilNetlist):
-        netlist = CoilNetlist(n_slots=12, pole_pairs=cfg.pole_pairs)
+    A_vec = np.asarray(result.vector_potential)  # (nx, ny, nz, 3)
 
     reg = mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
-    n_bands = reg[0].get("n_turns", 7) if reg else netlist.turns_per_coil
-    n_turns = n_bands * (netlist.n_slots // netlist.n_phases)
-    kw = 0.933  # 12s10p winding factor
-    A_pole = cfg.stack_length * cfg.R_stator_inner * np.pi / max(2 * cfg.pole_pairs, 1)
-    flux_linkage = kw * b_gap_mean * A_pole * n_turns
-    return flux_linkage
+    if not reg:
+        return 0.0
+
+    # Integrate A·dl along each centerline, group by phase
+    phase_flux = {0: 0.0, 1: 0.0, 2: 0.0}
+    for entry in reg:
+        pts = entry["points"]
+        phase = entry["phase"]
+        polarity = entry["polarity"]
+        n_turns = entry.get("n_turns", 7)
+        # Each turn carries the same flux; the serpentine has all turns
+        # in series, so the total flux linkage = sum over all turns.
+        # But since we integrate along the ENTIRE path (all turns),
+        # the integral already accounts for all turns.
+        flux = 0.0
+        for seg in range(len(pts) - 1):
+            p1 = pts[seg]
+            p2 = pts[seg + 1]
+            dl = p2 - p1
+            # Sample A at midpoint
+            mid = 0.5 * (p1 + p2)
+            idx = ((mid - cfg.origin) / cfg.spacing).astype(int)
+            i = int(np.clip(idx[0], 0, cfg.shape[0] - 1))
+            j = int(np.clip(idx[1], 0, cfg.shape[1] - 1))
+            k = int(np.clip(idx[2], 0, cfg.shape[2] - 1))
+            A_mid = A_vec[i, j, k, :]
+            flux += float(np.dot(A_mid, dl))
+        phase_flux[phase] += polarity * flux
+
+    # Average per-phase flux linkage
+    avg_flux = sum(phase_flux.values()) / 3.0
+    return abs(avg_flux)
 
 
 def extract_electrical_parameters(
@@ -182,18 +194,15 @@ def extract_electrical_parameters(
         wire_area = copper_vol / max(L_wire, 1e-9)
         phase_resistance = L_wire / (cfg.sigma_copper * max(wire_area, 1e-12))
 
+    # Synchronous inductance from air-gap geometry (no μr_iron — the
+    # gap dominates, not the iron):
+    # L_s = N² * μ₀ * A_pole / (2 * g_eff)
+    # g_eff = R_stator_inner - R_sleeve_outer (physical air gap)
     stack_len = cfg.stack_length
     mu0 = cfg.mu0
-    mu_r = cfg.mu_r_iron
-    # Magnetizing inductance from real air-gap geometry:
-    # L_m = N² * μ₀ * μr * A_pole / (2 * g_eff)
-    # g_eff = air_gap + h_pm / μr_pm (PM thickness adds to effective gap)
-    g_air = cfg.R_stator_inner - cfg.R_rotor_outer if hasattr(cfg, 'R_rotor_outer') else 0.003
-    h_pm = cfg.R_pm_outer - cfg.R_pm_inner if hasattr(cfg, 'R_pm_outer') else 0.004
-    mu_r_pm = 1.05
-    g_eff = g_air + h_pm / mu_r_pm
+    g_eff = cfg.R_stator_inner - getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer)
     A_pole = stack_len * cfg.R_stator_inner * np.pi / max(2 * cfg.pole_pairs, 1)
-    phase_inductance = n_turns_total ** 2 * mu0 * mu_r * A_pole / max(2 * g_eff, 1e-6)
+    phase_inductance = n_turns_total ** 2 * mu0 * A_pole / max(2 * g_eff, 1e-6)
 
     kw = 0.933  # 12s10p concentrated winding factor
     if flux_linkage_fea is not None:

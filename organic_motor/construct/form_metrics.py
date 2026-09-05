@@ -75,23 +75,14 @@ def cell_report(mf: MaterialField, cfg: MotorConfig3D, n_cells_expected: int = 1
 
 
 def copper_band_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
-    """Count distinct copper bands (turns) per cell.
+    """Count distinct copper bands (turns) per cell from the VISIBLE grid.
 
-    If a centerline registry is present (P5 serpentine), count turns
-    directly from the registry — this is grid-independent and exact.
-
-    Otherwise, fall back to voxel counting: slice the copper at the
-    azimuthal plane y~0 (through a tooth centre) and count distinct
-    band cross-sections in the (r, z) plane, filtered to the END-REGION
-    above the stack (top arches only).
+    Counts connected components in the end-region above the stack at
+    a tooth cross-section.  This is grid-dependent (requires the band
+    thickness to be resolved), unlike reading from the registry — but
+    it catches ribbon SDF fragmentation that registry-only counting
+    would miss.
     """
-    # P5: count from centerline registry (exact, grid-independent)
-    reg = mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
-    if reg and len(reg) > 0:
-        n_turns = reg[0].get("n_turns", 7)
-        return {"bands_per_cell": n_turns, "copper_clusters_raw": len(reg)}
-
-    # P4 fallback: voxel counting in end-region
     copper = mf.sdfs.get("copper")
     if copper is None:
         return {"bands_per_cell": 0}
@@ -104,11 +95,12 @@ def copper_band_report(mf: MaterialField, cfg: MotorConfig3D) -> dict:
     above = z > (cz + hz)
     slab = (copper.sdf[:, j0, :][:, above]) < 0.0
     if not slab.any():
-        return {"bands_per_cell": 0}
+        return {"bands_per_cell": 0, "copper_clusters_raw": 0}
     structure = ndimage.generate_binary_structure(2, 1)
     labels, n = ndimage.label(slab, structure=structure)
     sizes = ndimage.sum(slab, labels, range(1, n + 1)) if n else np.array([])
-    min_band = max(4, int((0.0008 / min(cfg.spacing[:2])) ** 2))
+    # Count only bands with at least 2 voxels (filter noise)
+    min_band = 2
     bands = int((sizes >= min_band).sum()) if n else 0
     return {"bands_per_cell": bands, "copper_clusters_raw": int(n)}
 

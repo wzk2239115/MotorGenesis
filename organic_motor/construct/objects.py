@@ -1406,24 +1406,23 @@ def _serpentine_centerline(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """One continuous serpentine conductor through all bands of a tooth.
 
-    Instead of ``n_bands`` independent closed loops, this produces ONE
-    continuous path that snakes through every band.  The key constraint:
-    the current direction must be the SAME in every band so the MMF adds
-    constructively (all bands push flux the same way through the tooth).
+    A TRUE helical serpentine: each turn is an OPEN "C" shape (no bottom
+    arch closes the loop).  The end of turn k connects directly to the
+    start of turn k+1 via a radial crossover.  The current direction
+    alternates each turn so the MMF adds constructively.
 
-    Topology per band (all identical direction):
-        up side A (-theta) → arch over top → down side B (+theta) →
-        arch under bottom → back to side A
-
-    Between bands: crossover at side A (bottom) from band k to band k+1.
-    The crossover is a short radial bridge at z = -zc.
-
-        terminal → band 0 (full loop) → crossover →
-        band 1 (full loop, same direction) → crossover → ...
+    Topology:
+        terminal → turn 0: up side A → arch top → down side B →
+        crossover (B bottom → B bottom of next band) →
+        turn 1: up side B → arch top (reversed) → down side A →
+        crossover (A bottom → A bottom of next band) →
+        turn 2: up side A → arch top → down side B → ...
         → exit terminal
 
-    Returns ``(points, tangents, segment_turns)`` where ``segment_turns``
-    maps each point to its turn index (0..n_bands-1).
+    Every internal node has degree 2 (in + out); no closed loops, no
+    bypass branches.  The start point of turn k ≠ end point of turn k.
+
+    Returns ``(points, tangents, segment_turns)``.
     """
     n_bands = len(r_k)
     all_pts = []
@@ -1436,21 +1435,29 @@ def _serpentine_centerline(
         thetas = np.linspace(-side_angle, side_angle, n_arch)
         cos_profile = (1.0 + np.cos(np.pi * thetas / side_angle)) * 0.5
 
-        # Same direction for every band:
-        # side A (-) bottom → side A (-) top → arch top → side B (+) top →
-        # side B (+) bottom → arch bottom → back to side A (-) bottom
-        pts = [[r * ca, -r * sa, -zc]]
-        pts.append([r * ca, -r * sa, zc])
-        for th, c in zip(thetas, cos_profile):
-            pts.append([r * np.cos(th), r * np.sin(th), zc + a * c])
-        pts.append([r * ca, r * sa, zc])
-        pts.append([r * ca, r * sa, -zc])
-        for th, c in zip(reversed(thetas), reversed(cos_profile)):
-            pts.append([r * np.cos(th), r * np.sin(th), -(zc + a * c)])
+        if k % 2 == 0:
+            # Even turn: up side A (-), arch top, down side B (+)
+            # Start: side A bottom, End: side B bottom
+            pts = [[r * ca, -r * sa, -zc]]
+            pts.append([r * ca, -r * sa, zc])
+            for th, c in zip(thetas, cos_profile):
+                pts.append([r * np.cos(th), r * np.sin(th), zc + a * c])
+            pts.append([r * ca, r * sa, zc])
+            pts.append([r * ca, r * sa, -zc])
+        else:
+            # Odd turn: up side B (+), arch top (reversed), down side A (-)
+            # Start: side B bottom, End: side A bottom
+            pts = [[r * ca, r * sa, -zc]]
+            pts.append([r * ca, r * sa, zc])
+            for th, c in zip(reversed(thetas), reversed(cos_profile)):
+                pts.append([r * np.cos(th), r * np.sin(th), zc + a * c])
+            pts.append([r * ca, -r * sa, zc])
+            pts.append([r * ca, -r * sa, -zc])
 
         if k > 0:
-            # Crossover: from end of band k-1 (side A bottom) to start of
-            # band k (side A bottom).  Both are at z ≈ -zc, different radii.
+            # Crossover: end of turn k-1 → start of turn k (radial bridge
+            # at z = -zc, different radii).  NO closed loop — direct
+            # end-to-start connection.
             prev_end = all_pts[-1]
             curr_start = pts[0]
             n_cross = 3
@@ -1491,7 +1498,7 @@ class StatorCell:
     cfg: MotorConfig3D
     tooth_index: int = 0
     n_bands: int = 7
-    band_radius: float = 0.0005
+    band_radius: float = 0.0006
     channel_wall: float = 0.0003
     arch_base: float = 0.002
     arch_slope: float = 1.0
@@ -1540,17 +1547,14 @@ class StatorCell:
         )
         tooth_dz = np.abs(Z - cz) - (zh + self.tooth_tip_dome)
         tooth = np.maximum(tooth_body, tooth_dz)
-        # local yoke arc with flux-driven thickness:
-        # thicker at tooth center (flux concentrates), thinner at slot
-        # center (flux splits).  Angular span < slot pitch creates visible
-        # inter-cell gaps (the LEAP "petal" look, not a monolithic ring).
-        yoke_ang = np.pi / 13.0  # slightly less than half slot pitch
-        # Thickness modulation: full at tooth, 60% at slot boundary
-        yoke_thick_mod = 0.6 + 0.4 * np.cos(d_ang * (np.pi / yoke_ang))
-        r_outer = cfg.R_winding_outer + (cfg.R_design - cfg.R_winding_outer) * yoke_thick_mod
+        # Continuous thin magnetic yoke (not segmented — the flux
+        # path between teeth must be unbroken).  Thickness is driven by
+        # flux saturation margin, not cosmetic modulation.
+        # Thin enough that it doesn't dominate the visual mass.
+        yoke_thick = 0.003  # 3mm — enough for flux, not a monolithic barrel
         yoke = np.maximum(
-            np.maximum(r - r_outer, cfg.R_winding_outer - r),
-            np.abs(d_ang) - yoke_ang,
+            r - (cfg.R_winding_outer + yoke_thick),
+            cfg.R_winding_outer - r,
         )
         yoke = np.maximum(yoke, np.abs(Z - cz) - zh)
         iron = np.minimum(tooth, yoke).astype(np.float32)
@@ -1559,7 +1563,7 @@ class StatorCell:
         return mf
 
     def build_copper(self, mf: MaterialField, grid=None) -> MaterialField:
-        from organic_motor.construct.field import polyline_ribbon_sdf
+        from organic_motor.construct.field import polyline_capsule_sdf
         from organic_motor.construct.winding_netlist import (
             PRINTED_FRAME_HALF, printed_netlist,
         )
@@ -1571,10 +1575,7 @@ class StatorCell:
         r_k, amp = self._band_radii(cfg)
         table = {t: (ph, pol) for t, ph, pol in netlist.coil_table()}
         phase, polarity = table[self.tooth_index]
-        # Flat band cross-section: thin radially, wide tangentially
-        band_width = 2.0 * self.band_radius  # e.g. 1.0mm wide
-        band_thickness = self.band_radius  # e.g. 0.5mm thick
-        cross_area = band_width * band_thickness  # rectangular approx
+        cross_area = np.pi * self.band_radius ** 2
 
         # Single continuous serpentine through all n_bands with crossovers
         pts, turn_map = _serpentine_centerline(
@@ -1583,9 +1584,9 @@ class StatorCell:
         ca, sa = np.cos(th0), np.sin(th0)
         pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
 
-        copper_sdf = polyline_ribbon_sdf(
+        copper_sdf = polyline_capsule_sdf(
             cfg.shape, cfg.spacing, cfg.origin, pts,
-            band_width, band_thickness, grid=grid)
+            self.band_radius, grid=grid)
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing,
                              origin=cfg.origin),
@@ -1611,7 +1612,7 @@ class StatorCell:
             "n_turns": self.n_bands,
             "tooth": self.tooth_index,
             "cross_section_area": float(cross_area),
-            "band_radius": float(band_thickness),
+            "band_radius": float(self.band_radius),
         })
         return mf
 
@@ -1680,33 +1681,19 @@ class StatorCell:
         return mf
 
     def build_coolant(self, mf: MaterialField, grid=None) -> MaterialField:
-        from organic_motor.construct.field import polyline_capsule_sdf
-        from organic_motor.construct.winding_netlist import (
-            PRINTED_FRAME_HALF, printed_netlist,
-        )
-        cfg = self.cfg
-        netlist = printed_netlist(cfg)
-        th0 = self._theta0()
-        cz = cfg.center[2]
-        zc = netlist.coil_zc(cfg)
-        r_k, amp = self._band_radii(cfg)
+        """In-band coolant channels — currently disabled.
+
+        The channel wall thickness exceeds the band radius, so there's
+        no room for a coolant channel inside the 0.5mm ribbon.  Cooling
+        is handled by the thermal solver's internal_sink_beta parameter
+        (volumetric heat sink) until the conductor is large enough for
+        a real channel.
+        """
         ch_r = self.band_radius - self.channel_wall
         if ch_r <= 0.0:
             return mf
-
-        coolant = np.full(cfg.shape, 1e9, dtype=np.float32)
-        for k in range(self.n_bands):
-            pts = _band_centerline(r_k[k], amp[k], PRINTED_FRAME_HALF, zc)
-            ca, sa = np.cos(th0), np.sin(th0)
-            pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
-            ch = polyline_capsule_sdf(cfg.shape, cfg.spacing, cfg.origin,
-                                      pts, ch_r, grid=grid)
-            coolant = np.minimum(coolant, ch)
-
-        prev = mf.metadata.get("_coolant_sdf")
-        if prev is not None:
-            coolant = np.minimum(prev, coolant)
-        mf.metadata["_coolant_sdf"] = coolant
+        # If we ever re-enable channels, use the serpentine centerline
+        # (not the deleted _band_centerline) and ribbon cross-section.
         return mf
 
 
@@ -1722,7 +1709,7 @@ class StatorCellArray:
 
     cfg: MotorConfig3D
     n_bands: int = 7
-    band_radius: float = 0.0005
+    band_radius: float = 0.0006
     channel_wall: float = 0.0003
     arch_base: float = 0.002
     arch_slope: float = 1.0
@@ -1924,7 +1911,7 @@ def field_driven_motor(cfg: MotorConfig3D | None = None) -> Motor:
         RotorCore(cfg),
         FieldDrivenMagnets(cfg),
         RotorSleeve(cfg),
-        StatorCellArray(cfg, n_bands=7, channel_wall=0.0007),
+        StatorCellArray(cfg, n_bands=7, channel_wall=0.0003),
         FunctionalVoids(cfg),
         StructuralContinuity(cfg),
     ])
