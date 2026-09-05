@@ -248,7 +248,12 @@ class AgentLoop:
             ir = IterationResult(iter=i, code=code, metrics=metrics, error=err, elapsed=elapsed)
             result.iterations.append(ir)
             obj = metrics.get("obj", float("inf"))
-            if obj < result.best_obj:
+            # Verdict gate: a candidate can only be "best" if it passes
+            # the engineering verdicts (no short, no open circuit, etc.)
+            feasible = metrics.get("passed", True)
+            if isinstance(feasible, list):
+                feasible = all(feasible)
+            if feasible and obj < result.best_obj:
                 result.best_obj = obj
                 result.best_iter = i
             self._log(ir, result)
@@ -312,14 +317,17 @@ class AgentLoop:
     def _heuristic_propose(self, code: str, metrics: dict, i: int) -> str:
         """Parametric fallback when no LLM is configured.
 
-        Re-sends the baseline with a perturbed magnet thickness / pole
-        fraction, so the loop infrastructure is exercised without an API key.
+        Perturbs the StatorCellArray band count and arch slope so the
+        loop exercises real parameter changes on the current baseline.
         """
-        thickness = 0.0035 + 0.0008 * np.sin(i)
-        frac = 0.72 + 0.06 * np.cos(i)
-        return self.baseline_code.replace("0.0035", f"{thickness:.5f}").replace(
-            "0.72", f"{frac:.4f}"
-        )
+        # Vary n_bands (5-9) and arch_slope (0.5-1.5)
+        n_bands = 5 + (i % 5)
+        arch_slope = 0.5 + 1.0 * (i % 3) / 2.0
+        code = self.baseline_code
+        code = code.replace("n_bands=7", f"n_bands={n_bands}")
+        code = code.replace("channel_wall=0.0003",
+                            f"channel_wall=0.0003, arch_slope={arch_slope:.3f}")
+        return code
 
 
 def run_loop(
@@ -331,7 +339,7 @@ def run_loop(
 ) -> RunResult:
     """Convenience entry point for the CLI and tests."""
     cfg = cfg or MotorConfig3D(
-        shape=(48, 48, 32), excitation_mode="terminal", filt_radius=0.0,
+        shape=(48, 48, 32), excitation_mode="impressed", filt_radius=0.0,
         projection_beta=0.0, mechanical_angles=3,
         maxwell_maxiter=120, thermal_maxiter=240, electric_maxiter=120,
         n_theta=32, torque_n_z=16, torque_n_r=16,

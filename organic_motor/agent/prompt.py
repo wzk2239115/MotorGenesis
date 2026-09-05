@@ -215,31 +215,20 @@ tangent contact.
 """
 
 
-BASELINE_CODE = '''# LEAP 71 field-driven motor: anchors first, functional voids, then grow.
-# Magnet thickness follows air-gap |B| with a barrel axial profile and a
-# helical skew (cogging cancellation).  Stator yoke thickens where flux
-# is high.  Cooling is helical voids with heat-driven walls.  The winding
-# is a real three-phase network: phase-separated radial layers, multi-
-# strand slot bundles.  Hub spokes anchor rotor->shaft.  Structural-
-# Continuity deletes any floating metal as the final invariant.
-def build(cfg):
-    mf = MaterialField(cfg.shape, cfg.spacing, cfg.origin)
-    B = airgap_B(cfg)
-    q = joule_heat(cfg)
+BASELINE_CODE = '''# LEAP 71 field-driven motor: StatorCellArray with swept serpentine
+# copper, arched end-turns, interface-only insulation, continuous
+# magnetic yoke, AM overhang constraint.  The rotor keeps the validated
+# radius budget (non-magnetic sleeve, 10-pole PM, 3mm air gap).
+# field_driven_motor() assembles all components in the correct order
+# with material priorities.  The agent should parameterise the cells,
+# not rebuild the assembly from scratch.
+from organic_motor.construct.objects import field_driven_motor
 
-    mf = ShaftAndBearings(cfg).build(mf)
-    mf = RotorCore(cfg).build(mf)
-    mf = FieldDrivenMagnets(cfg, thickness_field=B).build(mf)
-    mf = RotorSleeve(cfg).build(mf)
-    mf = FieldDrivenStatorYoke(cfg, flux_field=B).build(mf)
-    mf = StatorSegmentation(cfg).build(mf)
-    mf = Winding3D(cfg).build(mf)
-    mf = MotorHousing(cfg).build(mf)
-    mf = HelicalCoolingChannels(cfg, heat_field=q).build(mf)
-    mf = FunctionalVoids(cfg).build(mf)
-    mf = StructuralContinuity(cfg).build(mf)
-    return mf
+def build(cfg):
+    motor = field_driven_motor(cfg)
+    return motor.build()
 
 def magnetization(cfg):
-    return FieldDrivenMagnets(cfg).magnetization()
+    motor = field_driven_motor(cfg)
+    return motor.magnetization()
 '''
