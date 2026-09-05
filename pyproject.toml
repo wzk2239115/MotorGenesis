@@ -24,6 +24,9 @@ web = ["fastapi>=0.110", "uvicorn>=0.29"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: tests that require full physics resolution (minutes)",
+]
 
 [tool.setuptools.packages.find]
 include = ["organic_motor*"]
