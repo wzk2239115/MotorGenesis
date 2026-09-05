@@ -366,7 +366,7 @@ def _run_simulation_thread(
             phase_inductance=electrical.phase_inductance,
             flux_linkage=electrical.flux_linkage,
             current_limit=current_limit,
-            commutation_offset=3.1415927,
+            commutation_offset=0.0,
             steps=steps,
             dt=dt,
             load_torque=load_torque,
@@ -397,6 +397,8 @@ def _run_simulation_thread(
             phase_solver=phase_solver,
             include_mechanics=False,
         )
+
+        maps["temperature_init"] = jnp.full(cfg.shape, float(cfg.ambient_temperature), dtype=jnp.float32)
 
         sim["status"] = "running_transient"
         data = run_powered_transient(maps, p_settings, cfg, initial_angle)
