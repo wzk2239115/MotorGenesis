@@ -1,0 +1,38 @@
+[
+  {
+    "channel_type": "straight",
+    "length_m": 0.08,
+    "diameter_m": 0.003,
+    "reynolds": 27419.202357182054,
+    "friction_factor": 0.02455689076793893,
+    "velocity_ms": 6.016377398938132,
+    "flow_rate_kg_s": 0.04218704770820823,
+    "pressure_drop_Pa": 11756.9299188646,
+    "pump_power_W": 0.5,
+    "heat_removed_W": 10.0,
+    "temp_rise_K": 0.05672160285621749,
+    "outlet_temp_C": 40.056721602856214,
+    "nusselt": 146.74190969287164,
+    "h_conv_W_m2K": 30864.715005400667,
+    "applicable": true,
+    "notes": "all correlations within applicability range"
+  },
+  {
+    "channel_type": "helical",
+    "length_m": 0.8494228398385659,
+    "diameter_m": 0.003,
+    "reynolds": 8571.258353240148,
+    "friction_factor": 0.07571452390065941,
+    "velocity_ms": 1.8807230190409332,
+    "flow_rate_kg_s": 0.013187695263965467,
+    "pressure_drop_Pa": 37610.85724921444,
+    "pump_power_W": 0.5,
+    "heat_removed_W": 10.0,
+    "temp_rise_K": 0.1814507325112205,
+    "outlet_temp_C": 40.18145073251122,
+    "nusselt": 137.08857358697168,
+    "h_conv_W_m2K": 28834.296644459708,
+    "applicable": false,
+    "notes": "transitional flow \u2014 correlations not validated; De=1565 > 1000 \u2014 Ito may not apply"
+  }
+]
