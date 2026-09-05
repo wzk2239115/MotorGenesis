@@ -1,9 +1,12 @@
 # Step 2: Frozen Baseline Diagnostic Report
 
-**Commit**: `981d296`
+**Commit**: `981d296` (corrected `f36935e`)
 **Date**: 2026-09-05
-**Grid**: physics 96³ (spacing 0.95mm) + display 224³ (spacing 0.41mm)
-**Code**: `BASELINE_CODE` (field_driven_motor, n_bands=7, arch_slope=1.0)
+**Config**: MotorConfig3D(shape=(96,96,58), excitation_mode="impressed", filt_radius=0.0, projection_beta=0.0)
+  - Physics grid: spacing=(1.474, 1.474, 1.754)mm, origin=(-70,-70,-50)mm, domain=(141.5,141.5,101.8)mm
+  - Display grid: shape=(224,224,136), spacing=(0.628, 0.628, 0.741)mm
+  - Solver: maxwell_maxiter=60, thermal_maxiter=60, electric_maxiter=60, mechanical_angles=3, n_theta=16
+  - Code: BASELINE_CODE (field_driven_motor, n_bands=7, arch_slope=1.0, channel_wall=0.0003)
 
 ---
 
@@ -53,8 +56,8 @@
 | Through flow networks | 1 | (void network, not coolant) |
 | Trapped voids | 0 | — |
 
-**根因**: `build_coolant` 返回早退 (`channel_wall > band_radius`)。冷却通道被禁用。
-**修复方向**: 在相邻结构/绝缘体中实现共形冷却，不在铜带内。
+**根因**: `build_coolant` 在 `objects.py:1715` 硬编码 `return mf`，冷却通道被显式禁用。`channel_wall=0.3mm < band_radius=0.6mm`，条件检查通过但代码直接返回。
+**修复方向**: 实现 `build_coolant` 中的通道构建逻辑，或在外部结构中实现共形冷却。
 
 ---
 
@@ -117,10 +120,10 @@
 
 | # | Item | Root Cause | Fix Direction |
 |---|------|-----------|---------------|
-| F1 | mesh_convergence FAIL | 96³ fragments copper (440 vs 12) | Sub-voxel features need local refinement or higher physics grid |
-| F2 | cooling None | build_coolant disabled | Conformal cooling in adjacent structure |
-| F3 | thermal residual 3.16 | Not enough iterations | Increase thermal_maxiter or improve solver |
-| F4 | torque 0.005 Nm | Physics grid can't resolve copper | Same as F1 |
+| F1 | mesh_convergence FAIL | Hypothesis: 96³ fragments copper (440 vs 12) —待验证 | Sub-voxel features need local refinement or higher physics grid |
+| F2 | cooling None | build_coolant hardcoded return (objects.py:1715) | Implement channel construction or external conformal cooling |
+| F3 | thermal residual 3.16 | Not converged — may need more iterations or better preconditioner | Increase thermal_maxiter, investigate operator/boundary |
+| F4 | torque 0.005 Nm | Low value — 待验证是否由铜碎片化或电流沉积/求解问题导致 | Ablation experiment (Step 4 corrected) |
 | F5 | electromechanical None | Startup transient not run in scoring | Separate validation step |
 
 ---

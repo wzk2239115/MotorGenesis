@@ -1,7 +1,14 @@
 # Step 4: EM Model Credibility — Sensitivity and Reference Checks
 
-**Commit**: `8200a21`
+**Commit**: `8200a21` (corrected `f36935e`)
 **Date**: 2026-09-05
+**Config**: MotorConfig3D(shape=varies, excitation_mode="impressed", filt_radius=0.0, projection_beta=0.0)
+  - Domain: ~141×141×101 mm
+  - Grids tested: 96³ spacing=(1.474,1.474,1.754)mm, 128³ spacing=(1.102,1.102,1.299)mm, 160³ spacing=(0.881,0.881,1.053)mm
+  - Solver: maxwell_maxiter=60, thermal_maxiter=60, n_theta=16 (unless noted)
+  - Code: BASELINE_CODE (field_driven_motor, n_bands=7, arch_slope=1.0)
+
+**Important**: "铜碎片化导致转矩错误" 是待验证假设，不是已证实的根因。中心线电流模型不依赖铜体素解析。
 
 ---
 
@@ -22,6 +29,8 @@
 - **DDA divergence** excellent at all grids (1e-8). ✓
 
 **Conclusion**: Torque is NOT reliable at any tested resolution. Copper loss and DDA conservation ARE reliable.
+
+**Important caveat**: "铜碎片化导致转矩错误" 是假设，不是根因。在中心线电流模型中，铜密度不参与电流求解。需要通过消融实验隔离真正的转矩不稳定来源。
 
 ---
 
@@ -111,7 +120,8 @@
 ### Root cause:
 The 0.6mm copper bands are sub-voxel at 96³ (spacing 1.47mm). The line current source is correct, but the solver cannot properly model the electromagnetic interaction because the copper material is fragmented into 440 pieces. The torque, which depends on the interaction between current and iron/PM fields, is dominated by discretization error.
 
-### Fix direction:
-1. **Short-term**: Use 224³ physics grid (15s build + ~60s solve = manageable)
-2. **Medium-term**: Implement homogenized material properties for sub-voxel copper
-3. **Long-term**: Adaptive mesh refinement near copper bands
+### Fix direction (待验证，不预设结论):
+1. **先做消融实验**: 固定网格，仅改变铜占据场，观察转矩是否变化
+2. **再检查求解精度**: 固定网格提高 maxwell_maxiter 和转矩积分采样
+3. **最后才做网格加密**: 避免同时改变多个因素
+4. 224³作为对照实验，不预设为可信基准
