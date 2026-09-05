@@ -230,13 +230,14 @@ def smooth_boolean_subtract(a: SDFVoxelField, b: SDFVoxelField, blend: float = 0
 
 
 def offset(field: SDFVoxelField, distance: float) -> SDFVoxelField:
-    """Grow (``distance > 0``) or shrink (``distance < 0``) a solid.
+    """Grow ()``distance > 0``) or shrink (``distance < 0``) a solid.
 
-    Adding a constant to an SDF is an exact offset operation; it is the
-    primitive that makes shells, clearance gaps and fillets one-liners.
+    For an SDF where negative = inside, growing the solid means making
+    the SDF more negative (pushing the zero surface outward).  Therefore
+    the correct offset is ``sdf - distance``, NOT ``sdf + distance``.
     """
     return SDFVoxelField(
-        sdf=field.sdf + float(distance), spacing=field.spacing, origin=field.origin
+        sdf=field.sdf - float(distance), spacing=field.spacing, origin=field.origin
     )
 
 

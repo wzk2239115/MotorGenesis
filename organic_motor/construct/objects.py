@@ -1546,9 +1546,12 @@ class StatorCell:
         d_ang = np.mod(theta - th0 + np.pi, 2.0 * np.pi) - np.pi
 
         # tooth prism with slightly domed tip (self-supporting AM)
+        # Convert angular deviation to METRIC distance (arc length = r*d_ang)
+        # so max() with radial/axial distances is dimensionally consistent.
+        d_ang_metric = r * d_ang  # meters (was radians — broke offset/density)
         tooth_body = np.maximum(
             np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
-            np.abs(d_ang) - PRINTED_TOOTH_HALF,
+            np.abs(d_ang_metric) - r * PRINTED_TOOTH_HALF,
         )
         tooth_dz = np.abs(Z - cz) - (zh + self.tooth_tip_dome)
         tooth = np.maximum(tooth_body, tooth_dz)
@@ -1589,8 +1592,14 @@ class StatorCell:
         ca, sa = np.cos(th0), np.sin(th0)
         pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
 
+        # PHYSICAL copper geometry: sweep only the conductor path,
+        # NOT the virtual solver closure (terminal return).
+        # The closure is the last n_close+1 points that close the loop.
+        n_closure = 5  # 4 crossover pts + 1 forced closure
+        physical_pts = pts[:-n_closure]
+
         copper_sdf = polyline_capsule_sdf(
-            cfg.shape, cfg.spacing, cfg.origin, pts,
+            cfg.shape, cfg.spacing, cfg.origin, physical_pts,
             self.band_radius, grid=grid)
 
         mf.add(SDFVoxelField(sdf=copper_sdf, spacing=cfg.spacing,
@@ -1607,16 +1616,11 @@ class StatorCell:
         mf.metadata["winding_phase_sdf"] = ps
 
         # Register centerline for line-current deposition.
-        # The PHYSICAL conductor is the serpentine without the terminal
-        # return — it's an open path with two terminal ends.
-        # The SOLVER CLOSURE (terminal return) is stored separately so the
-        # face-flux DDA can deposit a div-free current source.
-        # The physical copper geometry is the swept band along all points
-        # EXCEPT the terminal return (which is a virtual closing path).
-        physical_pts = pts[:-5]  # exclude terminal return + closure point
+        # 'points' = full closed path (for div-free DDA solver)
+        # 'physical_points' = open path (for geometry, no virtual closure)
         mf.metadata.setdefault("centerline_registry", []).append({
-            "points": pts.copy(),  # full closed path for solver
-            "physical_points": physical_pts,  # open path for geometry
+            "points": pts.copy(),
+            "physical_points": physical_pts,
             "turn_map": turn_map.copy(),
             "phase": phase,
             "polarity": polarity,
@@ -1639,16 +1643,18 @@ class StatorCell:
         zh = cfg.stator_half_length
         th0 = self._theta0()
         d_ang = np.mod(theta - th0 + np.pi, 2.0 * np.pi) - np.pi
+        # Convert angular deviations to metric (arc length) for consistent SDF
+        d_ang_m = r * d_ang  # meters
         t = self.clad_thickness
 
         # (1) tooth-flank cladding: thin shell between tooth and clad angles
         clad_outer = np.maximum(
             np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
-            np.abs(d_ang) - PRINTED_CLAD_HALF,
+            np.abs(d_ang_m) - r * PRINTED_CLAD_HALF,
         )
         clad_inner = np.maximum(
             np.maximum(r - cfg.R_winding_outer, (cfg.R_stator_inner + 0.0002) - r),
-            np.abs(d_ang) - PRINTED_TOOTH_HALF,
+            np.abs(d_ang_m) - r * PRINTED_TOOTH_HALF,
         )
         clad = np.maximum(clad_outer, -clad_inner + 2 * t * 0)  # wall logic
         clad = np.maximum(
@@ -1659,8 +1665,8 @@ class StatorCell:
         flank = np.maximum(
             np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
             np.maximum(
-                np.abs(d_ang) - PRINTED_CLAD_HALF,
-                -(np.abs(d_ang) - PRINTED_TOOTH_HALF),
+                np.abs(d_ang_m) - r * PRINTED_CLAD_HALF,
+                -(np.abs(d_ang_m) - r * PRINTED_TOOTH_HALF),
             ),
         )
         flank = np.maximum(flank, np.abs(Z - cz) - (zh + 0.0006))
@@ -1671,7 +1677,7 @@ class StatorCell:
             cap = np.maximum(
                 np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
                 np.maximum(
-                    np.abs(d_ang) - PRINTED_TOOTH_HALF,
+                    np.abs(d_ang_m) - r * PRINTED_TOOTH_HALF,
                     np.abs(Z - (cz + sign * (zh + 0.0003))) - 0.0004,
                 ),
             )
@@ -1682,7 +1688,7 @@ class StatorCell:
         sep_d = np.abs(np.mod(theta - th0 - 0.5 * pitch + np.pi, 2*np.pi) - np.pi)
         sep = np.maximum(
             np.maximum(r - cfg.R_winding_outer, cfg.R_stator_inner - r),
-            np.maximum(sep_d - np.deg2rad(0.5), np.abs(Z - cz) - (zh + 0.002)),
+            np.maximum(r * sep_d - r * np.deg2rad(0.5), np.abs(Z - cz) - (zh + 0.002)),
         )
         insulator = np.minimum(insulator, sep.astype(np.float32))
 
