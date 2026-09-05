@@ -1590,7 +1590,7 @@ class StatorCell:
             r_k, amp, PRINTED_FRAME_HALF, zc, n_arch=8)
         # rotate to tooth position
         ca, sa = np.cos(th0), np.sin(th0)
-        pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, -sa], [sa, ca]])
+        pts[:, 0:2] = pts[:, 0:2] @ np.array([[ca, sa], [-sa, ca]])
 
         # PHYSICAL copper geometry: sweep only the conductor path,
         # NOT the virtual solver closure (terminal return).

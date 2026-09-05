@@ -165,6 +165,54 @@ class TestParameterChanges:
         assert cu5 != cu7, f"same copper: {cu5} vs {cu7}"
 
 
+class TestWindingDirection:
+    """The centerline rotation must place teeth in +θ direction."""
+
+    def test_centerline_tooth_angles_positive(self):
+        """Tooth n centerline must be at +n*pitch, not -n*pitch."""
+        from organic_motor.construct.objects import field_driven_motor
+        cfg = _cfg(shape=(96, 96, 58))
+        mf = field_driven_motor(cfg).build()
+        reg = mf.metadata.get("centerline_registry")
+        pitch_deg = 360.0 / 12  # 30 degrees
+        for e in reg:
+            pts = e["physical_points"]
+            mid = pts[len(pts) // 2]
+            theta = np.degrees(np.arctan2(mid[1], mid[0]))
+            expected = e["tooth"] * pitch_deg
+            # Normalize to [-180, 180)
+            diff = ((theta - expected + 180) % 360) - 180
+            assert abs(diff) < 5.0, (
+                f"tooth {e['tooth']}: θ={theta:.1f}°, expected~{expected:.1f}°, diff={diff:.1f}°"
+            )
+
+    def test_default_excitation_produces_torque(self):
+        """After rotation fix, default excitation must produce non-zero mean torque."""
+        import jax.numpy as jnp
+        from organic_motor.config3d import MotorConfig3D
+        from organic_motor.agent.sandbox import execute_agent_code
+        from organic_motor.construct.realize import realize
+        from organic_motor.optimization.objective3d import forward3d_fields
+
+        cfg = MotorConfig3D(
+            shape=(96, 96, 58), excitation_mode="impressed",
+            filt_radius=0.0, projection_beta=0.0,
+            mechanical_angles=6, maxwell_maxiter=240,
+            thermal_maxiter=10, electric_maxiter=10,
+            n_theta=16, torque_n_z=8, torque_n_r=8,
+        )
+        mf, mag, _ = execute_agent_code(BASELINE_CODE, cfg)
+        fields, mag_arr = realize(mf, cfg, mag)
+        reg = mf.metadata.get("centerline_registry")
+        angles = jnp.asarray(np.arange(6) * (2 * np.pi / (5 * 6)))
+        r = forward3d_fields(cfg, fields, mag_arr, angles,
+                              centerline_registry=reg)
+        torques = np.asarray(r.torques)
+        mean_torque = float(torques.mean())
+        # Must be positive and non-trivial (was ~0 before fix)
+        assert mean_torque > 0.01, f"mean torque {mean_torque:.6f} should be > 0.01"
+
+
 class TestRealClosedLoop:
     """Full agent loop at a resolution where verdicts can actually pass.
 
