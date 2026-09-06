@@ -124,6 +124,8 @@ function loadGlb(url) {
 // Canonical material for a node name ("rotor_iron"/"stator_iron" -> iron).
 function canonicalMaterial(name) {
   const n = name.toLowerCase();
+  if (n.includes("rotor_iron")) return "rotor_iron";
+  if (n.includes("stator_iron")) return "stator_iron";
   if (n.includes("iron")) return "iron";
   if (n.includes("copper")) return "copper";
   if (n.includes("pm")) return "pm";
@@ -133,11 +135,13 @@ function canonicalMaterial(name) {
 }
 
 const MAT_STYLE = {
-  iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
-  copper: { color: 0xc87533, metalness: 0.95, roughness: 0.28, env: 1.4 },
-  pm: { color: 0x8a2042, metalness: 0.5, roughness: 0.45, env: 0.8 },
-  coolant: { color: 0x408cde, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.45 },
-  insulator: { color: 0xe8e6da, metalness: 0.05, roughness: 0.6, env: 0.7 },
+  iron: { color: 0x4a5a6c, metalness: 0.92, roughness: 0.35, env: 1.2 },
+  rotor_iron: { color: 0x3a4a5c, metalness: 0.92, roughness: 0.35, env: 1.2 },
+  stator_iron: { color: 0x5a6a7c, metalness: 0.92, roughness: 0.35, env: 1.2 },
+  copper: { color: 0xe07020, metalness: 0.95, roughness: 0.25, env: 1.5 },
+  pm: { color: 0xc01030, metalness: 0.4, roughness: 0.4, env: 0.8, emissive: 0x300810 },
+  coolant: { color: 0x30a0e0, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.5 },
+  insulator: { color: 0xe0dcc0, metalness: 0.05, roughness: 0.6, env: 0.7 },
 };
 
 // Preserve the WORLD transform when moving a mesh between groups.
@@ -194,6 +198,10 @@ async function showCheckpoint(run, step, level) {
           color: st.color, metalness: st.metalness,
           roughness: st.roughness, envMapIntensity: st.env,
         });
+        if (st.emissive !== undefined) {
+          material.emissive = new THREE.Color(st.emissive);
+          material.emissiveIntensity = 0.6;
+        }
         if (st.opacity !== undefined) {
           material.transparent = true;
           material.opacity = st.opacity;
@@ -265,20 +273,22 @@ function applyExplode() {
 // Material toggles
 // ---------------------------------------------------------------------------
 const MATERIAL_COLORS = {
-  iron: "#5c748a",
-  copper: "#d6662b",
-  pm: "#cd2d48",
-  coolant: "#408cde",
-  insulator: "#e8e6da",
+  iron: "#4a5a6c",
+  rotor_iron: "#3a4a5c",
+  stator_iron: "#5a6a7c",
+  copper: "#e07020",
+  pm: "#c01030",
+  coolant: "#30a0e0",
+  insulator: "#e0dcc0",
 };
 // Coolant starts HIDDEN in the solid view (it is fluid inside the coils,
 // shown as a translucent blue flow path when toggled on).
-const materialVisible = { iron: true, copper: true, pm: true, coolant: false, insulator: true };
+const materialVisible = { iron: true, rotor_iron: true, stator_iron: true, copper: true, pm: true, coolant: false, insulator: true };
 
 function syncMaterialToggles() {
   const host = $("materialToggles");
   host.innerHTML = "";
-  for (const mat of ["iron", "copper", "pm", "insulator", "coolant"]) {
+  for (const mat of ["rotor_iron", "stator_iron", "iron", "copper", "pm", "insulator", "coolant"]) {
     const meshes = materialNodes.get(mat) || [];
     const present = meshes.length > 0;
     const row = document.createElement("label");
@@ -298,7 +308,8 @@ function syncMaterialToggles() {
 }
 function labelOf(m) {
   return {
-    iron: "铁 Iron", copper: "铜 Copper", pm: "磁钢 PM",
+    iron: "铁 Iron", rotor_iron: "转子铁 Rotor", stator_iron: "定子铁 Stator",
+    copper: "铜 Copper", pm: "磁钢 PM",
     coolant: "冷却 Coolant", insulator: "绝缘 Insulator",
   }[m] || m;
 }
@@ -332,8 +343,10 @@ async function refreshRuns() {
     opt.textContent = `${r.name}${r.has_checkpoints ? " ✓" : ""}`;
     sel.appendChild(opt);
   }
-  // Prefer the most recent run with checkpoints.
-  const best = state.runs.find((r) => r.has_checkpoints) || state.runs[0];
+  // Prefer the run with model_meta.json (assembly) for simulation support.
+  const best = state.runs.find((r) => r.name === "assembly")
+    || state.runs.find((r) => r.has_checkpoints)
+    || state.runs[0];
   sel.value = best.name;
   await selectRun(best.name);
 }
@@ -679,6 +692,9 @@ let simState = {
   progress: null,
 };
 
+// Manual spin — visual only, no simulation needed.
+let manualSpin = { active: false, rpm: 300, angle: 0 };
+
 function resetSimState() {
   if (simState.pollTimer) { clearInterval(simState.pollTimer); }
   simState.id = null;
@@ -698,6 +714,9 @@ function resetSimState() {
   const curves = $("curvesPanel");
   if (curves) curves.style.display = "none";
   if (rotorGroup) rotorGroup.rotation.z = 0;
+  manualSpin.active = false;
+  const sb = $("simSpinBtn");
+  if (sb) { sb.textContent = "🔄 手动旋转"; }
 }
 
 async function startSimulation() {
@@ -983,6 +1002,12 @@ $("simPlayBtn").addEventListener("click", () => {
   if (simState.playing) pausePlayback(); else startPlayback();
 });
 $("simResetBtn").addEventListener("click", resetPlayback);
+$("simSpinBtn").addEventListener("click", () => {
+  if (!rotorGroup) { status("请先加载模型", "error"); return; }
+  manualSpin.active = !manualSpin.active;
+  $("simSpinBtn").textContent = manualSpin.active ? "⏸ 停止旋转" : "🔄 手动旋转";
+  if (manualSpin.active) status("手动旋转中 (300 rpm)", "");
+});
 $("simSpeed")?.addEventListener("change", (e) => {
   simState.playSpeed = parseFloat(e.target.value);
   if (simState.results) applyPlaybackState();
@@ -1011,6 +1036,11 @@ function animate() {
   last = now;
   controls.update();
   updatePlayback(dt);
+  // Manual spin (visual only, no sim needed)
+  if (manualSpin.active && !simState.playing && rotorGroup) {
+    manualSpin.angle += (manualSpin.rpm / 60) * 2 * Math.PI * dt;
+    rotorGroup.rotation.z = manualSpin.angle;
+  }
   renderer.render(scene, camera);
   frameCount++;
   if (now - (animate._hud ?? now) > 500) {
