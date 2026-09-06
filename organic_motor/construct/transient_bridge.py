@@ -71,7 +71,8 @@ def load_constructed_checkpoint(
 
 
 def extract_fea_flux_linkage(
-    mf, cfg: MotorConfig3D, magnetization_raw=None,
+    mf, cfg: MotorConfig3D, magnetization_raw=None, *,
+    fields=None, registry=None,
 ) -> float:
     """Extract PM flux linkage via mutual-energy integral over a full
     electrical cycle.
@@ -92,6 +93,11 @@ def extract_fea_flux_linkage(
          The amplitude is the PM flux linkage; the phase should be
          120° apart.
 
+    ``fields`` (a TopologyFields3D built e.g. via
+    ModelArtifact.solver_fields) bypasses ``realize(mf)`` — REQUIRED for
+    artifact-loaded models: re-deriving fields from an impostor
+    (0.5-rho) SDF wrecks the CG conditioning at rotated angles.
+
     Returns the mean per-phase flux linkage amplitude [Wb].
     """
     import jax.numpy as jnp
@@ -99,7 +105,9 @@ def extract_fea_flux_linkage(
     from organic_motor.construct.realize import realize
     from organic_motor.optimization.objective3d import forward3d_fields
 
-    reg = mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
+    reg = registry
+    if reg is None and mf is not None and hasattr(mf, "metadata"):
+        reg = mf.metadata.get("centerline_registry")
     if not reg:
         return 0.0
 
@@ -108,7 +116,11 @@ def extract_fea_flux_linkage(
     angles = np.linspace(0, elec_period, n_angles, endpoint=False)
 
     phase_fluxes = {0: [], 1: [], 2: []}
-    fields, mag = realize(mf, cfg, magnetization_raw)
+    if fields is not None:
+        mag = jnp.asarray(magnetization_raw if magnetization_raw is not None
+                          else np.zeros((3,) + cfg.shape, np.float32))
+    else:
+        fields, mag = realize(mf, cfg, magnetization_raw)
 
     for angle in angles:
         result = forward3d_fields(
@@ -158,9 +170,12 @@ def extract_fea_flux_linkage(
 
 
 def extract_electrical_parameters(
-    mf: MaterialField, cfg: MotorConfig3D,
+    mf: MaterialField | None, cfg: MotorConfig3D,
     b_gap_mean: float = 0.0,
     flux_linkage_fea: float | None = None,
+    *,
+    registry: list | None = None,
+    copper_fraction: np.ndarray | None = None,
 ) -> ElectricalParameters:
     """Compute per-phase R, L, flux linkage from actual geometry.
 
@@ -170,20 +185,27 @@ def extract_electrical_parameters(
 
     These replace the hand-tuned constants in Powered3DSettings so the
     dynamic model reflects the actual winding and magnetic circuit.
-    """
-    densities = mf.to_densities()
-    copper = densities["copper"]
-    iron = densities["iron"]
-    pm = densities["pm"]
 
-    netlist = mf.metadata.get("winding_netlist") if hasattr(mf, "metadata") else None
+    ``mf`` may be None when the caller supplies ``registry`` (centerline
+    list) and optionally ``copper_fraction`` (density array) — the
+    artifact path, which must NOT re-derive fields through an impostor
+    SDF.
+    """
+    if registry is not None:
+        centerline_registry = registry
+        copper = (np.asarray(copper_fraction)
+                  if copper_fraction is not None
+                  else np.zeros(cfg.shape, dtype=np.float32))
+        netlist = None
+    else:
+        densities = mf.to_densities()
+        copper = densities["copper"]
+        netlist = mf.metadata.get("winding_netlist") if hasattr(mf, "metadata") else None
+
     if not isinstance(netlist, CoilNetlist):
         netlist = CoilNetlist(n_slots=12, pole_pairs=cfg.pole_pairs)
 
     # P5 centerline registry: use analytical R and actual turn count
-    centerline_registry = (
-        mf.metadata.get("centerline_registry") if hasattr(mf, "metadata") else None
-    )
     if centerline_registry:
         from organic_motor.optimization.line_current import centerline_resistance
         R_info = centerline_resistance(centerline_registry)

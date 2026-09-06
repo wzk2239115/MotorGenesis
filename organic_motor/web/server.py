@@ -467,13 +467,17 @@ def _run_simulation_thread(
         cfg = MotorConfig3D(**cfg_kwargs)
 
         from organic_motor.construct.startup_validation import (
-            _logits_from_densities, _mf_from_artifact,
+            _logits_from_densities,
         )
         import jax.numpy as jnp
 
         logits = _logits_from_densities(artifact, cfg)
-        magnetization = jnp.asarray(artifact.magnetization)
-        mf = _mf_from_artifact(artifact, cfg)
+        # CRITICAL: solver fields come DIRECTLY from the saved densities.
+        # Re-deriving an impostor SDF (0.5-rho) stalls the Maxwell CG at
+        # every rotated angle (residual 0.3-1.0) — see
+        # reports/diag_angle_sweep.py.  This path converges (1.3e-5).
+        fields, mag = artifact.solver_fields(cfg)
+        registry = artifact.centerline_registry or None
 
         from organic_motor.construct.transient_bridge import (
             extract_electrical_parameters, extract_fea_flux_linkage,
@@ -482,8 +486,12 @@ def _run_simulation_thread(
         with _GPU_LOCK:
             check_cancel()
             set_status("extracting_flux", "FEA flux linkage (6 PM solves)")
-            flux_fea = extract_fea_flux_linkage(mf, cfg, artifact.magnetization)
-        electrical = extract_electrical_parameters(mf, cfg, flux_linkage_fea=flux_fea)
+            flux_fea = extract_fea_flux_linkage(
+                None, cfg, artifact.magnetization,
+                fields=fields, registry=registry)
+        electrical = extract_electrical_parameters(
+            None, cfg, flux_linkage_fea=flux_fea,
+            registry=registry, copper_fraction=artifact.densities.get("rho_copper"))
 
         from organic_motor.experiments.motor3d_powered import (
             Powered3DSettings, compute_powered_maps, run_powered_transient,
@@ -547,9 +555,6 @@ def _run_simulation_thread(
             angles_map = np.linspace(0, elec_period, n_map_angles, endpoint=False)
 
             from organic_motor.optimization.objective3d import forward3d_fields
-            from organic_motor.construct.realize import realize
-            fields, mag = realize(mf, cfg, artifact.magnetization)
-            centerline_registry = artifact.centerline_registry or None
 
             def progress_cb(done, total, detail):
                 check_cancel()
@@ -561,12 +566,12 @@ def _run_simulation_thread(
                 return forward3d_fields(
                     cfg, fields, mag, [angle], single,
                     phase_amplitudes=amplitudes,
-                    centerline_registry=centerline_registry,
+                    centerline_registry=registry,
                 )
 
             with _GPU_LOCK:
                 maps = compute_powered_maps(
-                    cfg, logits, None, magnetization,
+                    cfg, logits, None, mag,
                     angles_map, p_settings,
                     phase_solver=phase_solver,
                     include_mechanics=False,

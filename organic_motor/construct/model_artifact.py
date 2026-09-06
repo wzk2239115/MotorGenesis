@@ -404,3 +404,41 @@ class ModelArtifact:
             coolant=self.densities.get("rho_coolant"),
             insulator=self.densities.get("rho_insulator"),
         )
+
+    def solver_fields(self, cfg):
+        """Build critic-ready TopologyFields3D DIRECTLY from the saved
+        densities.
+
+        The artifact densities are the smoothstep of the ORIGINAL
+        construction SDFs (mf.to_densities at save time) — the same
+        information the direct-construction path feeds the solver.
+        Re-deriving an impostor SDF (0.5 - rho) and re-smoothing it is NOT
+        equivalent: the impostor is near-binary, and after the rotor
+        rotation warp its material fractions wreck the CG conditioning
+        (measured: relative residual stalls at 0.3-1.0 at every non-zero
+        rotor angle on the 96^3 motor, vs 1.3e-5 via this path and via
+        direct construction — reports/diag_angle_sweep.py).
+
+        Returns (fields, magnetization_raw).
+        """
+        import jax.numpy as jnp
+        from organic_motor.topology.density3d import TopologyFields3D
+        from organic_motor.geometry.domain3d import domain_masks3d
+        import numpy as np
+
+        zeros = np.zeros(self.shape, dtype=np.float32)
+        rotor = np.asarray(domain_masks3d(cfg)["rotor_design"],
+                           dtype=np.float32)
+        d = self.densities
+        fields = TopologyFields3D(
+            rho_air=jnp.asarray(d.get("rho_air", zeros)),
+            rho_iron=jnp.asarray(d["rho_iron"]),
+            rho_copper=jnp.asarray(d.get("rho_copper", zeros)),
+            rho_pm=jnp.asarray(d["rho_pm"]),
+            rotor_ownership=jnp.asarray(rotor),
+            rho_insulator=jnp.asarray(d["rho_insulator"])
+            if "rho_insulator" in d else None,
+            rho_coolant=jnp.asarray(d["rho_coolant"])
+            if "rho_coolant" in d else None,
+        )
+        return fields, jnp.asarray(self.magnetization)

@@ -231,6 +231,8 @@ def validate_startup(
     display_mf=None,
     display_cfg: MotorConfig3D | None = None,
     torque_convergence: dict | None = None,
+    solver_fields=None,
+    solver_registry: list | None = None,
 ) -> MultiAngleStartupResult:
     """Run startup validation from multiple initial rotor angles.
 
@@ -241,8 +243,10 @@ def validate_startup(
 
     ``electrical`` (or ``mf``, from which it is extracted) supplies R, L and
     flux linkage from the actual geometry; without either, the historical
-    hand constants are used.  The ``*_maxiter`` kwargs are accepted for
-    convenience and ignored (set them on ``cfg`` instead).
+    hand constants are used.  ``solver_fields``/``solver_registry`` bypass
+    ``mf`` for artifact-loaded models (impostor-SDF realize stalls the
+    Maxwell CG at rotated angles).  The ``*_maxiter`` kwargs are accepted
+    for convenience and ignored (set them on ``cfg`` instead).
     """
     from organic_motor.experiments.motor3d_powered import Powered3DSettings
     from organic_motor.construct.transient_bridge import (
@@ -250,6 +254,9 @@ def validate_startup(
         extract_electrical_parameters,
     )
 
+    if electrical is None and solver_registry:
+        electrical = extract_electrical_parameters(
+            None, cfg, registry=solver_registry)
     if electrical is None and mf is not None:
         electrical = extract_electrical_parameters(mf, cfg)
     if electrical is None:
@@ -308,24 +315,32 @@ def validate_startup(
     # magnets and clip the winding), and the netlist belts keep the map
     # consistent with the actual winding topology.  The maps are solved
     # ONCE and shared by every startup angle (they are angle-periodic and
-    # initial-angle independent).
+    # initial-angle independent).  ``solver_fields`` (TopologyFields3D,
+    # e.g. from ModelArtifact.solver_fields) bypasses realize() — REQUIRED
+    # for artifact-loaded models (impostor-SDF realize stalls the CG).
     fields = None
     phase_belts_override = None
-    if mf is not None:
-        from organic_motor.construct.realize import realize
-        fields, _mag_fields = realize(mf, cfg)
-        if hasattr(mf, "metadata"):
-            netlist = mf.metadata.get("winding_netlist")
-            if netlist is not None:
-                phase_belts_override = jnp.asarray(netlist.phase_belts_3d(cfg))
+    if solver_fields is not None:
+        fields = solver_fields
+        centerline_registry = solver_registry
+    else:
+        if mf is not None:
+            from organic_motor.construct.realize import realize
+            fields, _mag_fields = realize(mf, cfg)
+            if hasattr(mf, "metadata"):
+                netlist = mf.metadata.get("winding_netlist")
+                if netlist is not None:
+                    phase_belts_override = jnp.asarray(netlist.phase_belts_3d(cfg))
+
+        from organic_motor.experiments.motor3d_powered import compute_powered_maps
+
+        # P5 line-current: pass centerline registry so the solver deposits
+        # currents from 3-D swept-band polylines instead of coarse rho_copper.
+        centerline_registry = None
+        if mf is not None and hasattr(mf, "metadata"):
+            centerline_registry = mf.metadata.get("centerline_registry")
 
     from organic_motor.experiments.motor3d_powered import compute_powered_maps
-
-    # P5 line-current: pass centerline registry so the solver deposits
-    # currents from 3-D swept-band polylines instead of coarse rho_copper.
-    centerline_registry = None
-    if mf is not None and hasattr(mf, "metadata"):
-        centerline_registry = mf.metadata.get("centerline_registry")
 
     def phase_solver(single, angle, amplitudes):
         return forward3d_fields(
@@ -451,8 +466,10 @@ def validate_from_checkpoint(
 ) -> MultiAngleStartupResult:
     """Load a constructed checkpoint and run startup validation.
 
-    Recovers centerline_registry from the NPZ if present, so the solver
-    uses line-current deposition instead of coarse rho_copper fallback.
+    Solver fields are built DIRECTLY from the artifact densities
+    (artifact.solver_fields): re-deriving an impostor (0.5-rho) SDF and
+    re-smoothing it stalls the Maxwell CG at every rotated angle
+    (measured residual 0.3-1.0 vs 1.3e-5 — reports/diag_angle_sweep.py).
     """
     from organic_motor.construct.model_artifact import ModelArtifact
 
@@ -463,10 +480,12 @@ def validate_from_checkpoint(
         jnp.asarray(artifact.magnetization),
     )
     if artifact.has_magnetization and artifact.has_centerlines:
-        mf = _mf_from_artifact(artifact, cfg)
+        fields, _mag = artifact.solver_fields(cfg)
         return validate_startup(
             cfg, logits, rotor_logits, magnetization,
-            n_angles=n_angles, steps=steps, mf=mf,
+            n_angles=n_angles, steps=steps,
+            solver_fields=fields,
+            solver_registry=artifact.centerline_registry,
         )
     return validate_startup(
         cfg, logits, rotor_logits, magnetization,
