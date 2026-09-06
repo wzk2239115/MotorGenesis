@@ -111,7 +111,10 @@ function loadGlb(url) {
   return new Promise((resolve, reject) => {
     new GLTFLoader().load(
       url,
-      (gltf) => resolve(gltf.scene),
+      (gltf) => {
+        const scene = gltf.scene || (gltf.scenes && gltf.scenes[0]) || new THREE.Group();
+        resolve(scene);
+      },
       undefined,
       (err) => reject(err)
     );
@@ -160,6 +163,9 @@ async function showCheckpoint(run, step, level) {
     const url = `/api/runs/${encodeURIComponent(run)}/checkpoint/${step}/glb`
       + `?level=${level}&smoothing=taubin&iterations=5&view=${view}`;
     const model = await loadGlb(url);
+    if (!model || typeof model.traverse !== 'function') {
+      throw new Error("GLB加载返回空场景 (gltf.scene未定义)");
+    }
     currentModel = model;
 
     assemblyGroup = new THREE.Group();
@@ -474,8 +480,9 @@ let sliceState = { field: "temperature", axis: 2, index: null };
 async function loadSlice() {
   if (!state.currentRun || state.stepIndex < 0) return;
   const step = state.steps[state.stepIndex];
-  const idx = sliceState.index ?? "";
-  const url = `/api/runs/${encodeURIComponent(state.currentRun)}/checkpoint/${step}/slice?field=${sliceState.field}&axis=${sliceState.axis}&index=${idx}`;
+  const idxParam = (sliceState.index != null && !isNaN(sliceState.index))
+    ? `&index=${sliceState.index}` : '';
+  const url = `/api/runs/${encodeURIComponent(state.currentRun)}/checkpoint/${step}/slice?field=${sliceState.field}&axis=${sliceState.axis}${idxParam}`;
   try {
     const res = await fetch(url);
     if (!res.ok) {
