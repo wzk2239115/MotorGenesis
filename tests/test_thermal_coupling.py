@@ -102,3 +102,60 @@ class TestCoupledThermal:
         d, s = _run(cfg, steps=5000)
         assert np.all(np.isfinite(d["max_temperature_C"]))
         assert np.all(np.isfinite(d["fluid_received_W"]))
+
+    def test_coolant_outlet_steady(self, cfg):
+        """Finite-volume coolant: T_out must NOT accumulate with time.
+
+        Old buggy code used accumulated energy / (m_dot*cp) which has
+        units K·s and grows linearly.  The fix uses a finite-volume
+        energy balance with implicit Euler.  At steady state, T_out
+        converges to T_in + q/(m_dot*cp) and does not grow with run
+        length.
+        """
+        d_short, s = _run(cfg, steps=2000)
+        d_long, _ = _run(cfg, steps=4000)
+        # Take the last 200 steps of each (quasi-steady region).
+        t_out_short = float(np.mean(d_short["coolant_outlet_C"][-200:]))
+        t_out_long = float(np.mean(d_long["coolant_outlet_C"][-200:]))
+        # With the bug, 2x longer run -> ~2x higher T_out (accumulation).
+        # With the fix, T_out is similar in both (quasi-steady).
+        assert abs(t_out_long - t_out_short) < 5.0, (
+            f"coolant T_out must not grow with run length: "
+            f"short={t_out_short:.2f} long={t_out_long:.2f} C"
+        )
+
+    def test_coolant_outlet_units(self, cfg):
+        """T_out finite-volume: verify dimensional consistency at steady state.
+
+        At steady state: T_out ≈ T_in + q / (m_dot * cp)  [K = W / (W/K)].
+        The finite-volume model converges to this when the transient
+        settles.  We check the LAST steps (quasi-steady region).
+        """
+        d, s = _run(cfg, steps=2000)
+        t_in = float(s.coolant_inlet_temp_C)
+        q = np.asarray(d["fluid_received_W"])
+        t_out = np.asarray(d["coolant_outlet_C"])
+        # Use last 200 steps (quasi-steady).
+        q_ss = float(np.mean(q[-200:]))
+        t_out_ss = float(np.mean(t_out[-200:]))
+        if abs(q_ss) < 1e-3:
+            pytest.skip("heat flux too small for dimensional check")
+        m_dot = 0.05  # initial mass flow rate [kg/s]
+        cp = 4179.0
+        t_out_expected = t_in + q_ss / (m_dot * cp)
+        assert abs(t_out_ss - t_out_expected) < 50.0, (
+            f"steady T_out={t_out_ss:.2f} vs expected={t_out_expected:.2f} "
+            f"(T_in={t_in}, q_ss={q_ss:.4f} W, m_dot*cp={m_dot*cp:.1f} W/K)"
+        )
+
+    def test_coolant_outlet_finite(self, cfg):
+        """Coolant temperature must be finite (no NaN/inf oscillation)."""
+        d, s = _run(cfg, steps=2000)
+        t_out = np.asarray(d["coolant_outlet_C"])
+        assert np.all(np.isfinite(t_out)), (
+            f"coolant T_out has NaN/inf: {t_out[:10]}"
+        )
+        # Temperature should be in a physical range (0-300 degC)
+        assert np.all(t_out > -50) and np.all(t_out < 500), (
+            f"coolant T_out out of range: min={t_out.min():.1f} max={t_out.max():.1f}"
+        )

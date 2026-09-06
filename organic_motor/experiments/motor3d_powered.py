@@ -488,13 +488,24 @@ def compute_powered_maps(
     # back-EMF makes ∫emf*i == ∫T*omega (energy balance).
     elec_angles = cfg.pole_pairs * map_angles
     psi_map_amps = []
+    psi_map_phases = []
     for p in range(3):
         a = 2.0 / na * np.sum(t_lin[p] * np.cos(elec_angles))
         b = 2.0 / na * np.sum(t_lin[p] * np.sin(elec_angles))
         psi_map_amps.append(float(np.sqrt(a * a + b * b)))
+        psi_map_phases.append(float(np.arctan2(b, a)))
     i_nom_mean = float(np.mean(np.abs(nominal)))
+    # psi = K / (p * i_nom) — derived from matching the map-based torque
+    # sum_p T1_p * i_p/i_nom to the standard PMSM torque 1.5*p*psi*Iq.
+    # The 1.5 factor cancels because the 3-phase sum_p cos^2 = 3/2 on
+    # BOTH sides of the equation.  The previous formula had an erroneous
+    # extra 1.5 in the denominator, making psi 1.5x too small.
     psi_from_map = float(np.mean(psi_map_amps)) / max(
-        1.5 * cfg.pole_pairs * i_nom_mean, 1e-12)
+        cfg.pole_pairs * i_nom_mean, 1e-12)
+
+    # --- Save RAW maps (before filtering) for diagnostics ---
+    maps_raw_t1 = t_lin.copy()
+    maps_raw_t0 = t0_map.copy()
 
     # --- Harmonic filter: keep only the FUNDAMENTAL (1st electrical
     # harmonic) of T0 and T1, zeroing all higher harmonics.  The
@@ -516,9 +527,6 @@ def compute_powered_maps(
         t0_map = a0 * cos_e + b0 * sin_e
         # T2 (reluctance) kept as-is: it's a 2nd-harmonic effect that
         # doesn't couple to the emf model anyway; its magnitude is ~0.
-        # Store the raw maps for diagnostics.
-    maps_raw_t1 = t_lin.copy()
-    maps_raw_t0 = t0_map.copy()
 
     materials = material_fields3d(last_result, cfg)
     masks = domain_masks3d(cfg)
@@ -550,6 +558,10 @@ def compute_powered_maps(
         "torque_i2_cross": t2_cross,    # T2_pq: pair cross terms (or None)
         "psi_from_map": psi_from_map,    # torque-consistent flux linkage [Wb]
         "psi_map_per_phase": psi_map_amps,  # per-phase T1 fundamental [Nm]
+        "psi_map_phases": psi_map_phases,   # per-phase T1 phase [rad]
+        "maps_raw_t1": maps_raw_t1,         # pre-filter T1 maps (3, na)
+        "maps_raw_t0": maps_raw_t0,         # pre-filter T0 maps (na,)
+        "filter_harmonics": filter_harmonics,  # whether filtering was applied
         "j_maps_ph": jnp.asarray(j_maps_ph) if keep_volumes else None,
         "b_map": jnp.asarray(b_map) if keep_volumes else None,
         "temperature_map": temperature_map,
@@ -968,11 +980,23 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             t_gap_new = t_gap + dt * (
                 q_gap_sink - h_end * A_end * (t_gap - ambient)
             ) / C_gap
-            # Coolant node: quasi-steady through-flow enthalpy balance —
-            # T_out from the accumulated solid-to-fluid heat.
+            # Coolant node: finite-volume through-flow energy balance.
+            # m_fluid*cp * dT/dt = q_solid + m_dot*cp*(T_in - T)
+            # Implicit Euler for the outflow term (unconditionally stable):
+            #   T_new = (T + dt*(q + m_dot*cp*T_in)/(m_fluid*cp))
+            #          / (1 + dt*m_dot/m_fluid)
+            # This replaces the quasi-steady T_out = T_in + q/(m_dot*cp)
+            # which created an algebraic loop that oscillated explosively
+            # in explicit time stepping.
+            m_fluid = rho_w * A_ch * L_ch  # coolant mass in channel [kg]
+            cp_w_val = 4179.0
+            tau = dt * m_dot_new / jnp.maximum(m_fluid, 1e-9)
+            t_cool_new = (
+                t_cool + dt * (q_ch_sink + m_dot_new * cp_w_val * T_cool_in)
+                / jnp.maximum(m_fluid * cp_w_val, 1e-9)
+            ) / jnp.maximum(1.0 + tau, 1.0)
+            # Diagnostic: track total energy transferred to coolant.
             q_fl_acc_new = q_fl_acc + q_ch_sink * dt
-            t_cool_new = T_cool_in + q_fl_acc_new / jnp.maximum(
-                m_dot_new * 4179.0, 1e-6)
         else:
             m_dot_new = m_dot
             h_ch_new = h_ch
@@ -1006,6 +1030,7 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             aero * omega,                  # windage part only [W]
             q_gap_sink + q_ch_sink,        # solid heat removed [W] (D7)
             q_ch_sink,                     # fluid-side received [W] (D7)
+            t_cool_new,                    # coolant outlet temp [degC] (D7)
         )
         return (angle, omega, currents, temperature, mapped_b,
                 v_d_int_new, v_q_int_new, trip_cnt_new, t_gap_new,
@@ -1040,7 +1065,8 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         maps["_scan"] = scan
     temperature_final, hist = scan(jnp.asarray(float(initial_angle)))
     (angle_h, speed_h, currents_h, torque_h, joule_h, iron_h, maxt_h,
-     elec_h, mech_h, copper_h, loadp_h, windp_h, qsolid_h, qfluid_h
+     elec_h, mech_h, copper_h, loadp_h, windp_h, qsolid_h, qfluid_h,
+     tcool_h,
      ) = (np.asarray(x) for x in hist)
     steps = int(settings.steps)
     rotor_angle = np.concatenate([[initial_angle], angle_h])
@@ -1062,6 +1088,7 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         "windage_power_W": windp_h,          # aerodynamic part only
         "solid_cooling_W": qsolid_h,         # heat leaving solid (D7)
         "fluid_received_W": qfluid_h,        # fluid-side gain (D7)
+        "coolant_outlet_C": tcool_h,         # coolant outlet temp (D7)
         "max_temperature_C": max_temperature,
         "temperature_final": np.asarray(temperature_final),
     }

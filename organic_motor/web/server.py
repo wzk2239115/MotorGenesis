@@ -522,6 +522,12 @@ def _run_simulation_thread(
         # the map solve does NOT depend on psi, only on geometry + unit
         # excitation).  After maps are computed, psi is overridden with
         # the map-consistent value (audit item 6: emf/torque consistency).
+        # n_turns from the centerline registry (7 bands per cell) —
+        # fixes the nominal-current normalization (was 7x too large).
+        n_turns_override = None
+        if registry:
+            n_turns_override = int(registry[0].get("n_turns", 1))
+
         p_settings = Powered3DSettings(
             phase_voltage_peak=voltage,
             phase_resistance=electrical.phase_resistance,
@@ -538,13 +544,9 @@ def _run_simulation_thread(
             load_viscous=load_viscous,
             rotor_inertia=rotor_inertia,
             include_windage=include_windage,
+            thermal_coupling="coupled",
+            n_turns_override=n_turns_override,
         )
-
-        # n_turns from the centerline registry (7 bands per cell) —
-        # fixes the nominal-current normalization (was 7x too large).
-        n_turns_override = None
-        if registry:
-            n_turns_override = int(registry[0].get("n_turns", 1))
 
         n_map_angles = 6
         cache_key = (artifact.design_hash, n_map_angles)
