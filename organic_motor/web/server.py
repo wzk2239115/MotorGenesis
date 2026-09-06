@@ -420,6 +420,8 @@ def _run_simulation_thread(
             "torque_Nm": data["transient_torque_Nm"].tolist(),
             "joule_power_W": data["transient_joule_power_W"].tolist(),
             "iron_power_W": data["transient_iron_power_W"].tolist(),
+            "electrical_power_W": data["electrical_power_W"].tolist(),
+            "mechanical_power_W": data["mechanical_power_W"].tolist(),
             "max_temperature_C": data["max_temperature_C"].tolist(),
             "rpm": (data["angular_velocity_rad_s"] * 60 / (2 * np.pi)).tolist(),
         }

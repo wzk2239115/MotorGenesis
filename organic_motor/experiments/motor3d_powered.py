@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -81,6 +82,11 @@ class Powered3DSettings:
     # --- B5: copper resistance temperature feedback ---
     resistance_temp_coeff: float = 0.00393  # copper alpha [1/K]
     resistance_ref_temp_C: float = 20.0
+    # --- D2: aerodynamic rotor load (windage) ---
+    include_windage: bool = False
+    windage_rotor_radius_m: float | None = None  # default R_sleeve_outer
+    windage_rotor_length_m: float | None = None  # default 2*rotor_half_length
+    windage_gap_m: float | None = None           # default air gap
 
 
 def load_design3d(
@@ -545,6 +551,40 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     cu_weight = jnp.maximum(copper_fraction, 0.0)
     cu_total = jnp.maximum(jnp.sum(cu_weight), 1e-12)
 
+    # --- D2: windage torque coefficients (constant per geometry) ---
+    include_windage = settings.include_windage
+    if include_windage:
+        r_w = float(settings.windage_rotor_radius_m
+                    if settings.windage_rotor_radius_m is not None
+                    else getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer))
+        l_w = float(settings.windage_rotor_length_m
+                    if settings.windage_rotor_length_m is not None
+                    else 2.0 * cfg.rotor_half_length)
+        g_w = float(settings.windage_gap_m
+                    if settings.windage_gap_m is not None
+                    else (cfg.R_stator_inner
+                          - getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer)))
+        nu_air = 1.91e-5 / 1.127
+        re_gap_0 = r_w * max(g_w, 1e-9) / nu_air          # omega multiplier
+        ta_0 = re_gap_0 ** 2 * (max(g_w, 1e-9) / r_w)     # omega^2 multiplier
+        re_disk_0 = r_w ** 2 / nu_air
+        side_lam = math.pi * (2.0 / max(re_gap_0, 1e-9)) * 1.127 * r_w ** 4 * l_w
+        side_turb = math.pi * 0.08 * re_gap_0 ** -0.25 * 1.127 * r_w ** 4 * l_w
+        ta_c = 1700.0
+        disk_lam = 2.0 * 3.87 * 0.5 * math.pi * 1.127 * r_w ** 5
+        disk_turb = 2.0 * 0.146 * re_disk_0 ** -0.2 * 0.5 * math.pi * 1.127 * r_w ** 5
+        re_disk_c = 3.0e5
+
+        def windage_torque(w):
+            side = jnp.where(ta_0 * w ** 2 < ta_c,
+                             side_lam * w ** 2, side_turb * w ** 2.0)
+            disk = jnp.where(re_disk_0 * w < re_disk_c,
+                             disk_lam * w ** 2, disk_turb * w ** 2)
+            return side + disk
+    else:
+        def windage_torque(w):
+            return jnp.asarray(0.0)
+
     two_thirds = 2.0 / 3.0
 
     def step(carry, idx):
@@ -633,6 +673,7 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             + jnp.sum(t2_vec * i_norm ** 2)
         )
         load = load_torque(omega, constant=load_const, viscous=load_visc)
+        load = load + windage_torque(omega)  # aerodynamic braking (D2)
         rotor = advance_rotor(
             RotorState(angle, omega), em_torque, load, J, dt
         )
