@@ -304,8 +304,12 @@ def compute_powered_maps(
     include_mechanics: bool = True,
     keep_volumes: bool = True,
     phases: Sequence[int] = (0, 1, 2),
+    progress=None,
 ) -> dict:
     """Full torque decomposition T0/T1/T2 via sign- and zero-current solves.
+
+    ``progress(done, total, detail)`` (optional) is called before every
+    solve so callers can surface observability/cancellation.
 
     Maxwell stress is quadratic in B, so torque at phase current ``a`` mixes
     T(a) = T0 + a*T1 + a^2*T2 (cogging + linear PMxI coupling + current-self
@@ -367,16 +371,30 @@ def compute_powered_maps(
     nominal = np.zeros(3, dtype=np.float64)
     last_result = None
 
+    total_solves = na * (1 + 2 * len(phases))
+    done = 0
+
     for i, angle in enumerate(angles):
+        if progress:
+            progress(done, total_solves, f"cogging θ{i + 1}/{na}")
         r_zero = phase_solver(zero_belts, float(angle), zero_amp)
         t0_map[i] = float(r_zero.torques[0])
+        done += 1
         print(f"    [maps] zero-I angle {i + 1}/{na} T0={t0_map[i]:+.4f}", flush=True)
 
     for p in phases:
         currents = []
         for i, angle in enumerate(angles):
+            if progress:
+                progress(done, total_solves,
+                         f"phase {['A', 'B', 'C'][p]} θ{i + 1}/{na} ±1×nominal")
             r_plus = phase_solver(singles[p], float(angle), plus_amp[p])
+            done += 1
+            if progress:
+                progress(done, total_solves,
+                         f"phase {['A', 'B', 'C'][p]} θ{i + 1}/{na} −1×nominal")
             r_minus = phase_solver(singles[p], float(angle), minus_amp[p])
+            done += 1
             t_plus = float(r_plus.torques[0])
             t_minus = float(r_minus.torques[0])
             t_lin[p, i] = 0.5 * (t_plus - t_minus)

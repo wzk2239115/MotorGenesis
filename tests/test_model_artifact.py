@@ -109,6 +109,26 @@ class TestModelArtifactLoad:
         loaded = ModelArtifact.load(path)
         assert loaded.motion_groups == artifact.motion_groups
 
+    def test_winding_change_invalidates_hash(self, built_motor):
+        """Audit item 4: different winding connection -> different hash
+        (cache keyed on the hash must not be reused)."""
+        motor, mf, cfg = built_motor
+        a1 = ModelArtifact.from_motor(motor, mf, cfg)
+        # Perturb ONE centerline (e.g. reversed polarity = different
+        # electrical connection, identical densities).
+        mf2_metadata = dict(mf.metadata)
+        import copy
+        reg2 = copy.deepcopy(mf.metadata["centerline_registry"])
+        reg2[0]["polarity"] = -reg2[0]["polarity"]
+        mf.metadata["centerline_registry"] = reg2
+        a2 = ModelArtifact.from_motor(motor, mf, cfg)
+        mf.metadata["centerline_metadata"] = mf2_metadata.get("centerline_metadata")
+        mf.metadata["centerline_registry"] = mf2_metadata["centerline_registry"]
+        assert a1.design_hash != a2.design_hash, (
+            "winding change must invalidate the design hash"
+        )
+        assert np.allclose(a1.densities["rho_iron"], a2.densities["rho_iron"])
+
 
 class TestEnergizationGate:
     def test_complete_motor_can_energize(self, saved_artifact):

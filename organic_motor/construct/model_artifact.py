@@ -99,7 +99,17 @@ def _arrays_to_registry(npz_data) -> list[dict]:
     return registry
 
 
-def _compute_design_hash(rho_dict: dict, magnetization: np.ndarray) -> str:
+def _compute_design_hash(rho_dict: dict, magnetization: np.ndarray,
+                         registry: list | None = None,
+                         config_dict: dict | None = None) -> str:
+    """Hash EVERYTHING that affects the solved fields (audit item 4).
+
+    Densities and magnetization alone are NOT enough: the winding
+    centerlines (current deposition), the electrical connection they
+    encode, and solver-facing config (pole pairs, radii, conductivities,
+    excitation) change the solution without changing densities.  All are
+    folded in so caches keyed on this hash cannot go stale.
+    """
     h = hashlib.sha256()
     for name in sorted(rho_dict):
         arr = rho_dict[name]
@@ -107,6 +117,22 @@ def _compute_design_hash(rho_dict: dict, magnetization: np.ndarray) -> str:
         h.update(arr.tobytes())
     h.update(b"magnetization")
     h.update(magnetization.tobytes())
+    if registry:
+        h.update(b"centerlines")
+        h.update(str(len(registry)).encode())
+        for entry in registry:
+            for key in ("phase", "polarity", "n_turns", "tooth",
+                        "cross_section_area", "band_radius",
+                        "solver_closure"):
+                h.update(str(entry.get(key)).encode())
+            h.update(np.ascontiguousarray(entry["points"], dtype=np.float32).tobytes())
+            tm = entry.get("turn_map")
+            if tm is not None:
+                h.update(np.ascontiguousarray(tm, dtype=np.int32).tobytes())
+    if config_dict:
+        h.update(b"config")
+        for key in sorted(config_dict):
+            h.update(f"{key}={config_dict[key]!r}".encode())
     return h.hexdigest()[:16]
 
 
@@ -158,7 +184,8 @@ class ModelArtifact:
             "stator": [n for n in comp_names if n in STATOR_COMPONENTS],
         }
 
-        design_hash = _compute_design_hash(densities, mag)
+        design_hash = _compute_design_hash(densities, mag, registry,
+                                           _cfg_to_dict(cfg))
 
         from organic_motor.geometry.domain3d import domain_masks3d
         rotor_mask = np.asarray(
@@ -207,7 +234,8 @@ class ModelArtifact:
 
         registry = mf.metadata.get("centerline_registry", [])
 
-        design_hash = _compute_design_hash(densities, magnetization)
+        design_hash = _compute_design_hash(
+            densities, magnetization, registry, _cfg_to_dict(cfg))
 
         from organic_motor.geometry.domain3d import domain_masks3d
         rotor_mask = np.asarray(

@@ -30,10 +30,25 @@
       <label class="live-toggle">
         <input id="liveToggle" type="checkbox" /> 实时跟随最新生长
       </label>
-      <label class="live-toggle" title="仅显示打印定子（移除转子/磁钢），用于与打印定子参考图对比">
-        <input id="statorViewToggle" type="checkbox" /> 定子视图 Stator view
-      </label>
       <button id="downloadStl" class="download-btn" title="下载当前步骤 STL">⬇ 下载 STL</button>
+    </section>
+
+    <section class="panel">
+      <label>视图</label>
+      <div class="view-controls">
+        <select id="viewMode">
+          <option value="full" selected>完整装配</option>
+          <option value="stator">仅定子</option>
+          <option value="rotor">仅转子</option>
+        </select>
+        <label class="live-toggle" title="轴向半剖 (仅显示，不影响求解几何)">
+          <input id="sectionToggle" type="checkbox" /> 剖切
+        </label>
+      </div>
+      <label>爆炸视图 <span id="explodeVal">0.00</span>
+        <input id="explodeRange" type="range" min="0" max="1" step="0.05" value="0" />
+      </label>
+      <div class="vnote">爆炸/剖切仅用于展示，不改变求解几何。</div>
     </section>
 
     <section class="panel">
@@ -94,11 +109,19 @@
       </div>
       <div class="sim-controls">
         <button id="simRunBtn" class="sim-btn">⚡ 通电运行</button>
+        <button id="simCancelBtn" class="sim-btn" disabled>✕ 取消</button>
         <button id="simPlayBtn" class="sim-btn" disabled>▶ 播放</button>
         <button id="simResetBtn" class="sim-btn" disabled>↺ 重置</button>
       </div>
       <div id="simStatus" class="sim-status">未运行</div>
       <div class="sim-playback">
+        <select id="simSpeed" title="播放倍率">
+          <option value="0.1">0.1×</option>
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+        </select>
         <input id="simTimeSlider" type="range" min="0" max="0" value="0" disabled />
         <span id="simTimeLabel">—</span>
       </div>

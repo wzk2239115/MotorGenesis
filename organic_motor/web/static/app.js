@@ -79,33 +79,31 @@ ground.position.y = -0.065;
 ground.receiveShadow = true;
 scene.add(ground);
 
-let currentModel = null;
+let currentModel = null;      // raw GLTF scene (kept only for disposal)
+let assemblyGroup = null;     // root: statorGroup + rotorGroup
+let statorGroup = null;
 let rotorGroup = null;
-const materialNodes = new Map(); // name -> THREE.Object3D
+const materialNodes = new Map(); // canonical material -> [mesh, ...]
+
+function disposeTree(root) {
+  root.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      mats.forEach((m) => m.dispose());
+    }
+  });
+}
 
 function clearModel() {
-  if (currentModel) {
-    scene.remove(currentModel);
-    currentModel.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material) {
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        mats.forEach((m) => m.dispose());
-      }
-    });
-    currentModel = null;
-  }
-  if (rotorGroup) {
-    scene.remove(rotorGroup);
-    rotorGroup.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material) {
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        mats.forEach((m) => m.dispose());
-      }
-    });
+  if (assemblyGroup) {
+    scene.remove(assemblyGroup);
+    disposeTree(assemblyGroup);
+    assemblyGroup = null;
+    statorGroup = null;
     rotorGroup = null;
   }
+  if (currentModel) { disposeTree(currentModel); currentModel = null; }
   materialNodes.clear();
 }
 
@@ -120,21 +118,91 @@ function loadGlb(url) {
   });
 }
 
+// Canonical material for a node name ("rotor_iron"/"stator_iron" -> iron).
+function canonicalMaterial(name) {
+  const n = name.toLowerCase();
+  if (n.includes("iron")) return "iron";
+  if (n.includes("copper")) return "copper";
+  if (n.includes("pm")) return "pm";
+  if (n.includes("coolant")) return "coolant";
+  if (n.includes("insulator")) return "insulator";
+  return null;
+}
+
+const MAT_STYLE = {
+  iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
+  copper: { color: 0xc87533, metalness: 0.95, roughness: 0.28, env: 1.4 },
+  pm: { color: 0x8a2042, metalness: 0.5, roughness: 0.45, env: 0.8 },
+  coolant: { color: 0x408cde, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.45 },
+  insulator: { color: 0xe8e6da, metalness: 0.05, roughness: 0.6, env: 0.7 },
+};
+
+// Preserve the WORLD transform when moving a mesh between groups.
+function reparentKeepWorld(o, target) {
+  const pos = new THREE.Vector3(); o.getWorldPosition(pos);
+  const quat = new THREE.Quaternion(); o.getWorldQuaternion(quat);
+  const scl = new THREE.Vector3(); o.getWorldScale(scl);
+  target.add(o);
+  o.position.copy(pos);
+  o.quaternion.copy(quat);
+  o.scale.copy(scl);
+}
+
 async function showCheckpoint(run, step, level) {
   const overlay = $("loadOverlay");
   $("loadText").textContent = `加载第 ${step} 步网格…`;
   overlay.classList.remove("hidden");
   status(`加载第 ${step} 步…`, "busy");
   clearModel();
+  resetSimState(); // model changed: old playback must not drive this one
   try {
-    const statorView = $("statorViewToggle")?.checked ?? false;
+    const view = viewState.mode === "stator" ? "stator" : "full";
     const url = `/api/runs/${encodeURIComponent(run)}/checkpoint/${step}/glb`
-      + `?level=${level}&smoothing=taubin&iterations=5&view=${statorView ? "stator" : "full"}`;
+      + `?level=${level}&smoothing=taubin&iterations=5&view=${view}`;
     const model = await loadGlb(url);
     currentModel = model;
 
-    // Motor is centred on origin in metres; frame it.
-    const box = new THREE.Box3().setFromObject(model);
+    assemblyGroup = new THREE.Group();
+    assemblyGroup.name = "assembly";
+    statorGroup = new THREE.Group();
+    statorGroup.name = "stator";
+    rotorGroup = new THREE.Group();
+    rotorGroup.name = "rotor";
+    assemblyGroup.add(statorGroup, rotorGroup);
+
+    model.traverse((o) => {
+      if (!o.isMesh) return;
+      o.castShadow = true;
+      o.receiveShadow = true;
+      const name = (o.name || o.parent?.name || "");
+      const mat = canonicalMaterial(name);
+      if (mat) {
+        if (!materialNodes.has(mat)) materialNodes.set(mat, []);
+        materialNodes.get(mat).push(o);
+        const st = MAT_STYLE[mat];
+        const material = new THREE.MeshStandardMaterial({
+          color: st.color, metalness: st.metalness,
+          roughness: st.roughness, envMapIntensity: st.env,
+        });
+        if (st.opacity !== undefined) {
+          material.transparent = true;
+          material.opacity = st.opacity;
+          material.depthWrite = false;
+        }
+        o.material = material;
+        o.visible = materialVisible[mat];
+        o.userData.baseVisible = materialVisible[mat];
+      } else {
+        o.userData.baseVisible = o.visible;
+      }
+      // Motion group by name prefix — the ONLY thing that rotates.
+      const target = name.toLowerCase().includes("rotor") ? rotorGroup : statorGroup;
+      reparentKeepWorld(o, target);
+    });
+    scene.add(assemblyGroup);
+
+    // Frame the camera on the whole assembly.
+    const box = new THREE.Box3().setFromObject(assemblyGroup);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     controls.target.copy(center);
@@ -145,69 +213,42 @@ async function showCheckpoint(run, step, level) {
       .add(center);
     controls.update();
 
-    // Index material nodes by name for per-material toggling.
-    const matStyle = {
-      iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
-      rotor_iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
-      stator_iron: { color: 0x7a8a9c, metalness: 0.92, roughness: 0.38, env: 1.2 },
-      copper: { color: 0xc87533, metalness: 0.95, roughness: 0.28, env: 1.4 },
-      pm: { color: 0x8a2042, metalness: 0.5, roughness: 0.45, env: 0.8 },
-      rotor_pm: { color: 0x8a2042, metalness: 0.5, roughness: 0.45, env: 0.8 },
-      coolant: { color: 0x408cde, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.45 },
-      insulator: { color: 0xe8e6da, metalness: 0.05, roughness: 0.6, env: 0.7 },
-    };
-    rotorGroup = new THREE.Group();
-    model.traverse((o) => {
-      if (o.isMesh) {
-        o.castShadow = true;
-        o.receiveShadow = true;
-        const name = (o.name || o.parent?.name || "").toLowerCase();
-        let matched = null;
-        for (const mat of Object.keys(matStyle)) {
-          if (name.includes(mat)) {
-            matched = mat;
-            break;
-          }
-        }
-        if (!matched) {
-          for (const mat of Object.keys(matStyle)) {
-            if (mat.includes("iron") && name.includes("iron")) { matched = mat; break; }
-            if (mat.includes("pm") && name.includes("pm")) { matched = mat; break; }
-          }
-        }
-        if (matched) {
-          materialNodes.set(matched, o);
-          const st = matStyle[matched];
-          const material = new THREE.MeshStandardMaterial({
-            color: st.color, metalness: st.metalness,
-            roughness: st.roughness, envMapIntensity: st.env,
-          });
-          if (st.opacity !== undefined) {
-            material.transparent = true;
-            material.opacity = st.opacity;
-            material.depthWrite = false;
-          }
-          o.material = material;
-        }
-        if (name.includes("rotor")) {
-          rotorGroup.add(o.clone());
-          o.visible = false;
-        }
-      }
-    });
-    if (rotorGroup.children.length > 0) {
-      scene.add(rotorGroup);
-    } else {
-      scene.add(model);
-    }
+    applyViewMode();
+    applyExplode();
     overlay.classList.add("hidden");
     status(`第 ${step} 步`, "");
     syncMaterialToggles();
   } catch (err) {
     $("loadText").textContent = "加载失败";
-    status(`加载失败: ${err.message || err}`, "error");
+    status(`加载失败: ${parseApiError(err)}`, "error");
     console.error(err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// View modes: full / stator / rotor / section / explode (display only)
+// ---------------------------------------------------------------------------
+const viewState = { mode: "full", section: false, explode: 0.0 };
+
+function applyViewMode() {
+  if (!assemblyGroup) return;
+  const m = viewState.mode;
+  statorGroup.visible = (m === "full" || m === "stator");
+  rotorGroup.visible = (m === "full" || m === "rotor");
+  // Section: a global clipping plane at the axial mid-plane (display only;
+  // never affects solver geometry).
+  renderer.clippingPlanes = viewState.section
+    ? [new THREE.Plane(new THREE.Vector3(0, 0, -1), 0.0)]
+    : [];
+  syncMaterialToggles();
+}
+
+function applyExplode() {
+  if (!assemblyGroup) return;
+  const e = viewState.explode;
+  // Display-only axial separation; rotor rotation stays about its own axis.
+  statorGroup.position.z = 0.045 * e;
+  rotorGroup.position.z = -0.045 * e;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +269,8 @@ function syncMaterialToggles() {
   const host = $("materialToggles");
   host.innerHTML = "";
   for (const mat of ["iron", "copper", "pm", "insulator", "coolant"]) {
-    const present = materialNodes.has(mat);
+    const meshes = materialNodes.get(mat) || [];
+    const present = meshes.length > 0;
     const row = document.createElement("label");
     row.className = "toggle";
     row.innerHTML = `
@@ -238,8 +280,8 @@ function syncMaterialToggles() {
     const cb = row.querySelector("input");
     cb.addEventListener("change", () => {
       materialVisible[mat] = cb.checked;
-      const node = materialNodes.get(mat);
-      if (node) node.visible = cb.checked;
+      // act on the meshes actually displayed (no clone/original split)
+      for (const m of meshes) m.visible = cb.checked;
     });
     host.appendChild(row);
   }
@@ -437,15 +479,24 @@ async function loadSlice() {
   try {
     const res = await fetch(url);
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      let err = {};
+      try { err = await res.json(); } catch { /* non-JSON */ }
       const canvas = $("sliceCanvas");
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#666";
       ctx.font = "12px sans-serif";
-      ctx.fillText("未计算", 12, canvas.height / 2);
+      const msg = parseApiError(err);
+      ctx.fillText(/未计算|not computed/.test(msg) ? "未计算" : "不可用", 12, canvas.height / 2);
       const src = $("sliceSource");
-      if (src) src.textContent = `⚠ ${err.detail || "该场在此运行中未计算"}`;
+      if (src) {
+        const kind = /grid|网格/.test(msg)
+          ? "该模型不支持 (网格不匹配)"
+          : /未计算|not computed/.test(msg)
+            ? "尚未计算 — 该场在此运行中不存在"
+            : `获取失败: ${msg}`;
+        src.textContent = `⚠ ${kind}`;
+      }
       return;
     }
     const data = await res.json();
@@ -522,8 +573,26 @@ $("liveToggle").addEventListener("change", (e) => {
   else if (state.eventSource) { state.eventSource.close(); state.eventSource = null; status("已停止实时跟随", ""); }
 });
 
-$("statorViewToggle").addEventListener("change", async () => {
-  if (state.stepIndex >= 0) await showCheckpoint(state.currentRun, state.steps[state.stepIndex], state.level);
+$("viewMode").addEventListener("change", (e) => {
+  const prev = viewState.mode;
+  viewState.mode = e.target.value;
+  applyViewMode();
+  // The stator view is served WITHOUT rotor meshes from the backend, so
+  // crossing the stator/full boundary needs a reload; full<->rotor are
+  // pure client-side group toggles.
+  const crossed = (prev === "stator") !== (viewState.mode === "stator");
+  if (crossed && state.stepIndex >= 0) {
+    showCheckpoint(state.currentRun, state.steps[state.stepIndex], state.level);
+  }
+});
+$("sectionToggle").addEventListener("change", (e) => {
+  viewState.section = e.target.checked;
+  applyViewMode();
+});
+$("explodeRange").addEventListener("input", (e) => {
+  viewState.explode = parseFloat(e.target.value);
+  $("explodeVal").textContent = viewState.explode.toFixed(2);
+  applyExplode();
 });
 
 $("downloadStl").addEventListener("click", () => {
@@ -560,33 +629,96 @@ document.querySelectorAll(".slice-axes button").forEach((btn) => {
 $("sliceIndex").addEventListener("input", () => { sliceState.index = parseInt($("sliceIndex").value, 10); loadSlice(); });
 
 // ---------------------------------------------------------------------------
-// Simulation (通电仿真)
+// Simulation (通电仿真) — physics-time playback, strict input parsing
 // ---------------------------------------------------------------------------
+
+// Unified API-error parsing: strings, {detail: str|obj|list}, anything.
+function parseApiError(err) {
+  if (err == null) return "未知错误";
+  if (typeof err === "string") return err;
+  if (typeof err === "number") return `HTTP ${err}`;
+  if (err.detail !== undefined) return parseApiError(err.detail);
+  if (Array.isArray(err)) return err.map(parseApiError).join("; ");
+  if (typeof err === "object") {
+    if (err.msg) return String(err.msg);
+    if (err.message) return String(err.message);
+    try { return JSON.stringify(err); } catch { return String(err); }
+  }
+  return String(err);
+}
+
+// Numeric input: EMPTY -> default; legal zero stays zero; garbage -> throw.
+function numInput(id, def, label) {
+  const raw = $(id).value.trim();
+  if (raw === "") return def;
+  const v = parseFloat(raw);
+  if (!Number.isFinite(v)) throw new Error(`${label}: 无法解析 "${raw}"`);
+  return v;
+}
+
 let simState = {
   id: null,
+  runName: null,        // results only valid for THIS run/model
   status: "idle",
   results: null,
   playing: false,
-  playIndex: 0,
+  playTime: 0.0,        // physical time [s]
   playSpeed: 1.0,
   pollTimer: null,
+  progress: null,
 };
+
+function resetSimState() {
+  if (simState.pollTimer) { clearInterval(simState.pollTimer); }
+  simState.id = null;
+  simState.runName = null;
+  simState.status = "idle";
+  simState.results = null;
+  simState.playing = false;
+  simState.playTime = 0.0;
+  simState.pollTimer = null;
+  simState.progress = null;
+  const play = $("simPlayBtn"), reset = $("simResetBtn"), slider = $("simTimeSlider");
+  if (play) { play.disabled = true; play.textContent = "▶ 播放"; }
+  if (reset) reset.disabled = true;
+  if (slider) { slider.disabled = true; slider.value = 0; }
+  const lbl = $("simTimeLabel");
+  if (lbl) lbl.textContent = "—";
+  const curves = $("curvesPanel");
+  if (curves) curves.style.display = "none";
+  if (rotorGroup) rotorGroup.rotation.z = 0;
+}
 
 async function startSimulation() {
   if (!state.currentRun) { status("请先选择运行实例", "error"); return; }
-  const controlMode = $("simControlMode").value;
-  const iqRefRaw = parseFloat($("simIqRef").value);
-  const poRaw = parseFloat($("simPowerOff").value);
-  const params = {
-    voltage: parseFloat($("simVoltage").value) || 24,
-    current_limit: parseFloat($("simCurrentLimit").value) || 50,
-    initial_angle: (parseFloat($("simInitialAngle").value) || 0) * Math.PI / 180,
-    load_torque: parseFloat($("simLoadTorque").value) || 0.005,
-    steps: parseInt($("simSteps").value) || 4000,
-    control_mode: controlMode,
-    i_q_ref_A: isNaN(iqRefRaw) ? null : iqRefRaw,
-    power_off_at_s: isNaN(poRaw) ? null : poRaw / 1000.0,
-  };
+  let params;
+  try {
+    const iqRaw = $("simIqRef").value.trim();
+    const poRaw = $("simPowerOff").value.trim();
+    params = {
+      voltage: numInput("simVoltage", 24, "电压"),
+      current_limit: numInput("simCurrentLimit", 50, "电流上限"),
+      initial_angle: numInput("simInitialAngle", 0, "初始角") * Math.PI / 180,
+      load_torque: numInput("simLoadTorque", 0.005, "负载"),
+      steps: Math.round(numInput("simSteps", 4000, "步数")),
+      control_mode: $("simControlMode").value,
+      i_q_ref_A: iqRaw === "" ? null : (() => {
+        const v = parseFloat(iqRaw);
+        if (!Number.isFinite(v)) throw new Error(`q轴电流: 无法解析 "${iqRaw}"`);
+        return v;
+      })(),
+      power_off_at_s: poRaw === "" ? null : (() => {
+        const v = parseFloat(poRaw);
+        if (!Number.isFinite(v)) throw new Error(`断电时刻: 无法解析 "${poRaw}"`);
+        return v / 1000.0;
+      })(),
+    };
+  } catch (err) {
+    $("simStatus").textContent = `输入错误: ${err.message}`;
+    return;
+  }
+  resetSimState();
+  simState.runName = state.currentRun;
   $("simRunBtn").disabled = true;
   $("simStatus").textContent = "提交中…";
   try {
@@ -595,67 +727,145 @@ async function startSimulation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      let err = {}; try { err = await res.json(); } catch { /* */ }
+      throw new Error(parseApiError(err));
+    }
     const data = await res.json();
     simState.id = data.sim_id;
     simState.status = "queued";
-    $("simStatus").textContent = "排队中…";
+    // Echo the settings the backend actually adopted (incl. voltage
+    // definition) so the user can verify nothing was silently changed.
+    if (data.adopted) {
+      const a = data.adopted;
+      $("simStatus").textContent =
+        `已提交 (${simState.id}) · 后端采用: ${a.control_mode}` +
+        ` V相峰值=${a.voltage}V 负载=${a.load_torque}Nm` +
+        `${a.i_q_ref_A != null ? ` Iq*=${a.i_q_ref_A}A` : ""}` +
+        ` · ${a.voltage_definition}`;
+    } else {
+      $("simStatus").textContent = `已提交 (${simState.id})`;
+    }
     pollSimulation();
   } catch (err) {
-    $("simStatus").textContent = `提交失败: ${err.message}`;
+    $("simStatus").textContent = `提交失败: ${parseApiError(err)}`;
     $("simRunBtn").disabled = false;
   }
 }
 
+function fmtProgress(p) {
+  if (!p) return "";
+  let s = ` · ${p.phase}`;
+  if (p.angles_total) s += ` ${p.angles_done}/${p.angles_total} 角`;
+  if (p.elapsed_s != null) s += ` ${p.elapsed_s.toFixed(0)}s`;
+  if (p.detail) s += ` (${p.detail})`;
+  return s;
+}
+
 function pollSimulation() {
   if (simState.pollTimer) clearInterval(simState.pollTimer);
+  const myId = simState.id;
+  const myRun = simState.runName;
   simState.pollTimer = setInterval(async () => {
-    if (!simState.id) return;
+    // Stale-response guard: user switched model or resubmitted meanwhile.
+    if (!simState.id || simState.id !== myId || simState.runName !== myRun) {
+      clearInterval(simState.pollTimer);
+      simState.pollTimer = null;
+      return;
+    }
     try {
-      const res = await fetch(`/api/simulations/${simState.id}`);
+      const res = await fetch(`/api/simulations/${myId}/status`);
       if (!res.ok) return;
       const data = await res.json();
       simState.status = data.status;
-      if (data.status === "done" && data.results) {
-        simState.results = data.results;
-        const r = data.results;
-        const energyNote = r.energy_valid === false
-          ? ` · ⚠ 能量失衡 ${(r.energy_imbalance_rel * 100).toFixed(0)}% (结果不可信)`
+      simState.progress = data.progress || null;
+      if (data.status === "done") {
+        const rres = await fetch(`/api/simulations/${myId}/results`);
+        const r = await rres.json();
+        if (simState.id !== myId) return; // guard again after await
+        simState.results = r.results;
+        const r2 = r.results;
+        const energyNote = r2.energy_valid === false
+          ? ` · ⚠ 能量失衡 ${(r2.energy_imbalance_rel * 100).toFixed(0)}% (结果不可信)`
           : "";
         $("simStatus").textContent =
-          `完成 · ${r.time_s.length} 步 · 末速 ${(r.rpm[r.rpm.length - 1]).toFixed(0)} rpm${energyNote}`;
+          `完成 · ${r2.time_s.length} 步 · 末速 ${(r2.rpm[r2.rpm.length - 1]).toFixed(0)} rpm${energyNote}`;
         $("simRunBtn").disabled = false;
         $("simPlayBtn").disabled = false;
         $("simResetBtn").disabled = false;
-        $("simTimeSlider").disabled = false;
-        $("simTimeSlider").max = data.results.time_s.length - 1;
-        $("simTimeSlider").value = 0;
-        simState.playIndex = 0;
-        drawCurves(data.results);
+        const slider = $("simTimeSlider");
+        slider.disabled = false;
+        slider.max = r2.time_s.length - 1;
+        slider.value = 0;
+        simState.playTime = r2.time_s[0];
+        drawCurves(r2);
         $("curvesPanel").style.display = "";
         clearInterval(simState.pollTimer);
         simState.pollTimer = null;
         startPlayback();
-      } else if (data.status === "failed") {
-        $("simStatus").textContent = `失败: ${data.error || "未知错误"}`;
-        $("simRunBtn").disabled = false;
-        clearInterval(simState.pollTimer);
-        simState.pollTimer = null;
-      } else if (data.status === "rejected") {
-        $("simStatus").textContent = `拒绝: ${data.error || ""}`;
+      } else if (data.status === "failed" || data.status === "rejected"
+                 || data.status === "cancelled") {
+        $("simStatus").textContent =
+          `${{failed: "求解失败", rejected: "模型被拒绝", cancelled: "已取消"}[data.status]}: ${parseApiError(data.error)}`;
         $("simRunBtn").disabled = false;
         clearInterval(simState.pollTimer);
         simState.pollTimer = null;
       } else {
-        $("simStatus").textContent = `运行中: ${data.status}…`;
+        $("simStatus").textContent = `运行中${fmtProgress(data.progress)}`;
       }
     } catch (err) { /* keep polling */ }
   }, 1000);
 }
 
+// --- physics-time playback -----------------------------------------------
+function interpAt(t) {
+  const r = simState.results;
+  const T = r.time_s;
+  if (t <= T[0]) return { i: 0, frac: 0 };
+  if (t >= T[T.length - 1]) return { i: T.length - 2, frac: 1 };
+  let lo = 0, hi = T.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (T[mid] <= t) lo = mid; else hi = mid;
+  }
+  return { i: lo, frac: (t - T[lo]) / (T[lo + 1] - T[lo]) };
+}
+
+function lerpArr(arr, i, f) {
+  return arr[i] * (1 - f) + arr[i + 1] * f;
+}
+
+function applyPlaybackState() {
+  const r = simState.results;
+  if (!r) return;
+  const t = simState.playTime;
+  const { i, frac } = interpAt(t);
+  const angle = lerpArr(r.rotor_angle_rad, i, frac);
+  const rpm = lerpArr(r.rpm, i, frac);
+  if (rotorGroup) rotorGroup.rotation.z = angle;
+  const slider = $("simTimeSlider");
+  if (slider && document.activeElement !== slider) slider.value = i + frac;
+  $("simTimeLabel").textContent =
+    `${(t * 1000).toFixed(2)} ms · ${rpm.toFixed(0)} rpm · ${simState.playSpeed}x`;
+  drawCurvesCursor(t);
+}
+
+function updatePlayback(dtRender) {
+  if (!simState.playing || !simState.results) return;
+  const T = simState.results.time_s;
+  simState.playTime += dtRender * simState.playSpeed;
+  if (simState.playTime >= T[T.length - 1]) {
+    simState.playTime = T[T.length - 1];
+    pausePlayback();
+  }
+  applyPlaybackState();
+}
+
 function startPlayback() {
+  if (!simState.results) return;
+  const T = simState.results.time_s;
+  if (simState.playTime >= T[T.length - 1]) simState.playTime = T[0];
   simState.playing = true;
-  simState.playIndex = 0;
   $("simPlayBtn").textContent = "⏸ 暂停";
 }
 
@@ -666,91 +876,137 @@ function pausePlayback() {
 
 function resetPlayback() {
   simState.playing = false;
-  simState.playIndex = 0;
   $("simPlayBtn").textContent = "▶ 播放";
-  $("simTimeSlider").value = 0;
-  if (rotorGroup) rotorGroup.rotation.z = 0;
-  $("simTimeLabel").textContent = "—";
-}
-
-function updatePlayback() {
-  if (!simState.playing || !simState.results) return;
-  const r = simState.results;
-  const n = r.time_s.length;
-  simState.playIndex += Math.max(1, Math.round(simState.playSpeed * 2));
-  if (simState.playIndex >= n) {
-    simState.playIndex = n - 1;
-    pausePlayback();
-  }
-  const i = simState.playIndex;
-  $("simTimeSlider").value = i;
-  $("simTimeLabel").textContent = `${(r.time_s[i]*1000).toFixed(1)} ms · ${(r.rpm[i]).toFixed(0)} rpm`;
-  if (rotorGroup) {
-    rotorGroup.rotation.z = r.rotor_angle_rad[i];
+  if (simState.results) {
+    // Reset restores the run's ACTUAL initial angle, not zero.
+    simState.playTime = simState.results.time_s[0];
+    applyPlaybackState();
+  } else {
+    if (rotorGroup) rotorGroup.rotation.z = 0;
+    $("simTimeLabel").textContent = "—";
   }
 }
 
+// --- curves with axes, units, legend, time cursor ------------------------
 function drawCurves(r) {
+  simState._curves = r; // cached for the cursor overlay
   const canvas = $("curvesCanvas");
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
-  const n = r.time_s.length;
-  const tMax = r.time_s[n-1];
-  const series = [
-    { data: r.rpm, color: "#7ee08a", label: "rpm", scale: 1 },
-    { data: r.torque_Nm, color: "#e0a87e", label: "T [Nm]", scale: 1 },
-    { data: r.currents_A.map(c => c[0]), color: "#7eaee0", label: "Ia [A]", scale: 1 },
+  const panels = [
+    { data: r.rpm, color: "#7ee08a", label: "转速 [rpm]" },
+    { data: r.torque_Nm, color: "#e0a87e", label: "转矩 [N·m]" },
+    { data: r.currents_A.map(c => c[0]), color: "#7eaee0", label: "电流 ia [A]" },
   ];
-  for (const s of series) {
+  const n = r.time_s.length;
+  const tMax = r.time_s[n - 1] * 1000; // ms
+  const padL = 34, padR = 6, padT = 14, padB = 14;
+  const plotW = W - padL - padR;
+  const panelH = (H - padT - padB) / panels.length;
+  ctx.font = "9px sans-serif";
+  panels.forEach((s, pi) => {
     let min = Infinity, max = -Infinity;
     for (const v of s.data) { if (v < min) min = v; if (v > max) max = v; }
-    if (max - min < 1e-9) { min -= 1; max += 1; }
+    if (max - min < 1e-12) { min -= 1; max += 1; }
+    const y0 = padT + pi * panelH;
+    const yToPx = (v) => y0 + panelH - 8 - ((v - min) / (max - min)) * (panelH - 14);
+    // panel frame
+    ctx.strokeStyle = "#2a3a48";
+    ctx.strokeRect(padL, y0 + 2, plotW, panelH - 8);
+    // series
     ctx.strokeStyle = s.color;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
-      const x = (r.time_s[i] / tMax) * W;
-      const y = H - ((s.data[i] - min) / (max - min)) * H;
+      const x = padL + (r.time_s[i] * 1000 / tMax) * plotW;
+      const y = yToPx(s.data[i]);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
-  }
-  ctx.fillStyle = "#888";
-  ctx.font = "10px sans-serif";
-  ctx.fillText("rpm / T / Ia", 4, 12);
+    // scale labels
+    ctx.fillStyle = "#7d94a4";
+    ctx.fillText(max.toPrecision(3), 2, y0 + 10);
+    ctx.fillText(min.toPrecision(3), 2, y0 + panelH - 8);
+    // legend
+    ctx.fillStyle = s.color;
+    ctx.fillText(s.label, padL + 4, y0 + 10);
+  });
+  // time axis
+  ctx.fillStyle = "#7d94a4";
+  ctx.fillText("0", padL, H - 3);
+  const tLabel = `${tMax.toFixed(1)} ms`;
+  ctx.fillText(tLabel, W - padR - ctx.measureText(tLabel).width - 4, H - 3);
+}
+
+function drawCurvesCursor(tSec) {
+  const r = simState._curves;
+  if (!r) return;
+  const canvas = $("curvesCanvas");
+  const ctx = canvas.getContext("2d");
+  // cheap full redraw (cached series) + cursor
+  drawCurves(r);
+  const W = canvas.width, H = canvas.height;
+  const tMax = r.time_s[r.time_s.length - 1] * 1000;
+  if (tMax <= 0) return;
+  const padL = 34, padR = 6;
+  const plotW = W - padL - padR;
+  const x = padL + (tSec * 1000 / tMax) * plotW;
+  ctx.strokeStyle = "#ffffff88";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, 14);
+  ctx.lineTo(x, H - 14);
+  ctx.stroke();
 }
 
 $("simRunBtn").addEventListener("click", startSimulation);
+$("simCancelBtn")?.addEventListener("click", async () => {
+  if (!simState.id) return;
+  try {
+    await fetch(`/api/simulations/${simState.id}/cancel`, { method: "POST" });
+    $("simStatus").textContent = "取消请求已发送…";
+  } catch { /* */ }
+});
 $("simPlayBtn").addEventListener("click", () => {
   if (simState.playing) pausePlayback(); else startPlayback();
 });
 $("simResetBtn").addEventListener("click", resetPlayback);
+$("simSpeed")?.addEventListener("change", (e) => {
+  simState.playSpeed = parseFloat(e.target.value);
+  if (simState.results) applyPlaybackState();
+});
 $("simTimeSlider").addEventListener("input", () => {
   if (!simState.results) return;
-  simState.playIndex = parseInt($("simTimeSlider").value);
   pausePlayback();
   const r = simState.results;
-  const i = simState.playIndex;
-  $("simTimeLabel").textContent = `${(r.time_s[i]*1000).toFixed(1)} ms · ${(r.rpm[i]).toFixed(0)} rpm`;
-  if (rotorGroup) rotorGroup.rotation.z = r.rotor_angle_rad[i];
+  const i = Math.min(parseInt($("simTimeSlider").value, 10), r.time_s.length - 2);
+  simState.playTime = lerpArr(r.time_s, i,
+    parseFloat($("simTimeSlider").value) - i);
+  applyPlaybackState();
 });
 
 // ---------------------------------------------------------------------------
-// Render loop
+// Render loop — playback advances by RENDER time so physics time is
+// frame-rate independent (120 fps and 60 fps see the same angle at the
+// same physical instant).
 // ---------------------------------------------------------------------------
 let last = performance.now();
 let frameCount = 0;
 function animate() {
   requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt = Math.min((now - last) / 1000.0, 0.1); // clamp tab-switch jumps
+  last = now;
   controls.update();
-  updatePlayback();
+  updatePlayback(dt);
   renderer.render(scene, camera);
   frameCount++;
-  const now = performance.now();
-  if (now - last > 500) {
-    $("fpsHud").textContent = `${Math.round(frameCount * 1000 / (now - last))} fps`;
-    last = now;
+  if (now - (animate._hud ?? now) > 500) {
+    if (animate._hud != null) {
+      $("fpsHud").textContent = `${Math.round(frameCount * 1000 / (now - animate._hud))} fps`;
+    }
+    animate._hud = now;
     frameCount = 0;
   }
 }

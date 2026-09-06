@@ -32,6 +32,42 @@ from fastapi.staticfiles import StaticFiles
 
 from organic_motor.web import builder
 
+try:
+    from pydantic import BaseModel, Field
+except ImportError:  # pragma: no cover
+    BaseModel = None
+    Field = None
+
+
+if BaseModel is not None:
+    class SimRequest(BaseModel):
+        """Typed, range-checked simulation request (audit item 2).
+
+        Defaults apply ONLY to missing fields; legal zero values (0 V,
+        0 N·m) are preserved end-to-end.
+        """
+        voltage: float = Field(24.0, ge=0.0, le=1000.0)
+        current_limit: float = Field(50.0, ge=0.0, le=1000.0)
+        initial_angle: float = Field(0.0, ge=-4 * 3.14159, le=4 * 3.14159)
+        steps: int = Field(4000, ge=1, le=200_000)
+        dt: float = Field(2.0e-5, gt=0.0, le=1.0e-2)
+        load_torque: float = Field(0.005, ge=0.0, le=100.0)
+        load_viscous: float = Field(1.0e-4, ge=0.0, le=10.0)
+        rotor_inertia: float = Field(2.0e-4, gt=0.0, le=10.0)
+        control_mode: str = Field("open_loop",
+                                  pattern="^(open_loop|current_control)$")
+        i_q_ref_A: float | None = Field(None, ge=-1000.0, le=1000.0)
+        power_off_at_s: float | None = Field(None, ge=0.0)
+        include_windage: bool = False
+else:  # pragma: no cover
+    class SimRequest:  # type: ignore[no-redef]
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+        def model_dump(self):
+            return dict(self.__dict__)
+
 
 def _cache_dir(run_dir: Path) -> Path:
     cache = run_dir / "web_cache"
@@ -252,68 +288,169 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
         )
 
     @app.post("/api/runs/{run_name}/simulate")
-    async def start_simulation(run_name: str, body: dict = None) -> dict:
+    async def start_simulation(run_name: str, body: SimRequest | None = None) -> dict:
         """Start a powered transient simulation for this run.
 
-        Body params: voltage, current_limit, initial_angle, steps, dt,
-        load_torque, load_viscous, rotor_inertia.
-
-        Returns sim_id for polling.
+        Typed + range-checked request body; the response echoes the
+        settings the backend actually adopted (including the voltage
+        definition) so the UI never silently changes an operating point.
         """
         import threading
         import uuid
 
+        req = body or SimRequest()
         run_dir = _find_run(run_name)
         sim_id = f"sim_{uuid.uuid4().hex[:8]}"
-        settings = body or {}
-        app.state.simulations[sim_id] = {
+        settings = req.model_dump()
+        sim = {
+            "sim_id": sim_id,
             "status": "queued",
             "run_name": run_name,
             "settings_input": settings,
+            "adopted": {
+                "control_mode": req.control_mode,
+                "voltage": req.voltage,
+                "voltage_definition": "相电压峰值 (phase voltage peak)",
+                "current_limit": req.current_limit,
+                "initial_angle": req.initial_angle,
+                "load_torque": req.load_torque,
+                "steps": req.steps,
+                "dt": req.dt,
+                "i_q_ref_A": req.i_q_ref_A,
+                "power_off_at_s": req.power_off_at_s,
+                "include_windage": req.include_windage,
+            },
+            "progress": {"phase": "queued", "angles_done": 0, "angles_total": None,
+                         "elapsed_s": 0.0},
             "started_at": time.time(),
         }
+        app.state.simulations[sim_id] = sim
+        _persist_sim(run_dir, sim)
         thread = threading.Thread(
             target=_run_simulation_thread,
-            args=(sim_id, run_dir, settings, app.state.simulations),
+            args=(sim_id, run_dir, settings, app.state),
             daemon=True,
         )
         thread.start()
-        return {"sim_id": sim_id, "status": "queued"}
+        return {"sim_id": sim_id, "status": "queued", "adopted": sim["adopted"]}
 
-    @app.get("/api/simulations/{sim_id}")
+    @app.get("/api/simulations/{sim_id}/status")
     def get_simulation_status(sim_id: str) -> dict:
-        """Poll simulation status and results."""
+        """Lightweight status (no result payloads)."""
         sim = app.state.simulations.get(sim_id)
         if sim is None:
             raise HTTPException(status_code=404, detail="simulation not found")
-        return sim
+        return {k: v for k, v in sim.items() if k != "results"}
+
+    @app.get("/api/simulations/{sim_id}/results")
+    def get_simulation_results(sim_id: str) -> dict:
+        """Full result payload (only meaningful once status == done)."""
+        sim = app.state.simulations.get(sim_id)
+        if sim is None:
+            raise HTTPException(status_code=404, detail="simulation not found")
+        if "results" not in sim:
+            raise HTTPException(status_code=404, detail="results not computed")
+        return {"sim_id": sim_id, "status": sim["status"], "results": sim["results"]}
+
+    @app.post("/api/simulations/{sim_id}/cancel")
+    def cancel_simulation(sim_id: str) -> dict:
+        sim = app.state.simulations.get(sim_id)
+        if sim is None:
+            raise HTTPException(status_code=404, detail="simulation not found")
+        if sim["status"] in ("done", "failed", "rejected", "cancelled"):
+            return {"sim_id": sim_id, "status": sim["status"]}
+        sim["cancel_requested"] = True
+        return {"sim_id": sim_id, "status": sim["status"], "cancelling": True}
 
     app.state.roots = roots
     app.state.simulations = {}
+    _restore_sims(app)
     return app
 
 
+def _persist_sim(run_dir: Path, sim: dict) -> None:
+    """Persist a simulation record (status/progress; results only at end)."""
+    try:
+        d = run_dir / "simulations"
+        d.mkdir(parents=True, exist_ok=True)
+        slim = {k: v for k, v in sim.items() if k != "results"}
+        (d / f"{sim['sim_id']}.json").write_text(
+            json.dumps(slim, indent=1, default=str), encoding="utf-8")
+        if "results" in sim:
+            (d / f"{sim['sim_id']}_results.json").write_text(
+                json.dumps(sim["results"], default=str), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _restore_sims(app) -> None:
+    """Reload persisted simulations at startup (page refresh recovery)."""
+    for root in app.state.roots:
+        for f in sorted(root.glob("*/simulations/*.json")):
+            if f.name.endswith("_results.json"):
+                continue
+            try:
+                sim = json.loads(f.read_text(encoding="utf-8"))
+                sim.setdefault("sim_id", f.stem)
+                rf = f.parent / f"{f.stem}_results.json"
+                if rf.is_file():
+                    sim["results"] = json.loads(rf.read_text(encoding="utf-8"))
+                if sim.get("status") in ("queued", "loading", "extracting_flux",
+                                         "solving_maps", "running_transient"):
+                    sim["status"] = "interrupted"  # server died mid-run
+                app.state.simulations[f.stem] = sim
+            except Exception:
+                continue
+
+
+_GPU_LOCK = __import__("threading").Lock()
+_MAPS_CACHE: dict = {}  # design_hash -> maps dict (audit item 4)
+
+
+class _Cancelled(Exception):
+    pass
+
+
 def _run_simulation_thread(
-    sim_id: str, run_dir: Path, settings: dict, app_state: dict,
+    sim_id: str, run_dir: Path, settings: dict, app_state,
 ):
     """Run a powered transient in a background thread.
 
-    Updates app_state[sim_id] with status and results.
+    Observable: phase / angles-done / elapsed / detail in sim["progress"].
+    Cancellable: sim["cancel_requested"] checked between solves.
+    Serialized: one GPU job at a time (others wait with visible status).
+    Persisted: every status change lands in run_dir/simulations/.
     """
     import numpy as np
     from organic_motor.construct.model_artifact import ModelArtifact
-    from organic_motor.config3d import MotorConfig3D
 
-    sim = app_state.get(sim_id)
+    sims = app_state.simulations
+    sim = sims.get(sim_id)
     if sim is None:
         return
+    t0 = time.time()
+
+    def set_status(status, phase=None, **prog):
+        sim["status"] = status
+        sim["progress"] = {
+            "phase": phase or status,
+            "elapsed_s": time.time() - t0,
+            **prog,
+        }
+        _persist_sim(run_dir, sim)
+
+    def check_cancel():
+        if sim.get("cancel_requested"):
+            raise _Cancelled()
+
     try:
-        sim["status"] = "loading"
+        set_status("loading", "loading model")
         artifact = ModelArtifact.load(run_dir)
         can_run, reasons = artifact.can_energize()
         if not can_run:
             sim["status"] = "rejected"
             sim["error"] = "; ".join(reasons)
+            _persist_sim(run_dir, sim)
             return
 
         from organic_motor.config3d import MotorConfig3D
@@ -342,8 +479,10 @@ def _run_simulation_thread(
             extract_electrical_parameters, extract_fea_flux_linkage,
         )
 
-        sim["status"] = "extracting_flux"
-        flux_fea = extract_fea_flux_linkage(mf, cfg, artifact.magnetization)
+        with _GPU_LOCK:
+            check_cancel()
+            set_status("extracting_flux", "FEA flux linkage (6 PM solves)")
+            flux_fea = extract_fea_flux_linkage(mf, cfg, artifact.magnetization)
         electrical = extract_electrical_parameters(mf, cfg, flux_linkage_fea=flux_fea)
 
         from organic_motor.experiments.motor3d_powered import (
@@ -363,10 +502,12 @@ def _run_simulation_thread(
         i_q_ref = float(i_q_ref) if i_q_ref is not None else None
         power_off_at = settings.get("power_off_at_s")
         power_off_at = float(power_off_at) if power_off_at is not None else None
+        include_windage = bool(settings.get("include_windage", False))
 
         if electrical.flux_linkage < 1e-8:
             sim["status"] = "rejected"
             sim["error"] = "flux_linkage ~0 — FEA extraction failed or winding not connected"
+            _persist_sim(run_dir, sim)
             return
 
         p_settings = Powered3DSettings(
@@ -384,31 +525,58 @@ def _run_simulation_thread(
             load_torque=load_torque,
             load_viscous=load_viscous,
             rotor_inertia=rotor_inertia,
+            include_windage=include_windage,
         )
 
-        sim["status"] = "solving_maps"
         n_map_angles = 6
-        elec_period = 2.0 * np.pi / cfg.pole_pairs
-        angles_map = np.linspace(0, elec_period, n_map_angles, endpoint=False)
+        cache_key = (artifact.design_hash, n_map_angles)
+        cached = _MAPS_CACHE.get(cache_key)
+        if cached is not None:
+            # Shallow copy so the per-run jitted "_scan" (bound to THIS
+            # run's settings) never leaks back into the cache.
+            maps = dict(cached)
+            maps.pop("_scan", None)
+            set_status("solving_maps", "reusing cached maps",
+                       angles_done=42, angles_total=42,
+                       detail=f"cache hit (design {artifact.design_hash}) — "
+                              "operating-point-only change, maps identical")
+        else:
+            set_status("solving_maps", "solving maps", angles_done=0,
+                       angles_total=n_map_angles)
+            elec_period = 2.0 * np.pi / cfg.pole_pairs
+            angles_map = np.linspace(0, elec_period, n_map_angles, endpoint=False)
 
-        from organic_motor.optimization.objective3d import forward3d_fields
-        from organic_motor.construct.realize import realize
-        fields, mag = realize(mf, cfg, artifact.magnetization)
-        centerline_registry = artifact.centerline_registry or None
+            from organic_motor.optimization.objective3d import forward3d_fields
+            from organic_motor.construct.realize import realize
+            fields, mag = realize(mf, cfg, artifact.magnetization)
+            centerline_registry = artifact.centerline_registry or None
 
-        def phase_solver(single, angle, amplitudes):
-            return forward3d_fields(
-                cfg, fields, mag, [angle], single,
-                phase_amplitudes=amplitudes,
-                centerline_registry=centerline_registry,
-            )
+            def progress_cb(done, total, detail):
+                check_cancel()
+                set_status("solving_maps", "solving maps",
+                           angles_done=done, angles_total=total,
+                           detail=detail)
 
-        maps = compute_powered_maps(
-            cfg, logits, None, magnetization,
-            angles_map, p_settings,
-            phase_solver=phase_solver,
-            include_mechanics=False,
-        )
+            def phase_solver(single, angle, amplitudes):
+                return forward3d_fields(
+                    cfg, fields, mag, [angle], single,
+                    phase_amplitudes=amplitudes,
+                    centerline_registry=centerline_registry,
+                )
+
+            with _GPU_LOCK:
+                maps = compute_powered_maps(
+                    cfg, logits, None, magnetization,
+                    angles_map, p_settings,
+                    phase_solver=phase_solver,
+                    include_mechanics=False,
+                    progress=progress_cb,
+                )
+            _MAPS_CACHE[cache_key] = {
+                k: v for k, v in maps.items() if k != "_scan"
+            }
+            if len(_MAPS_CACHE) > 4:  # bounded cache
+                _MAPS_CACHE.pop(next(iter(_MAPS_CACHE)))
 
         maps["temperature_init"] = jnp.full(cfg.shape, float(cfg.ambient_temperature), dtype=jnp.float32)
 
@@ -428,21 +596,22 @@ def _run_simulation_thread(
                 f"(1.5*p*psi*I_nom={t_phys:.2f} x2.5) — refine the grid "
                 "or increase map angles before trusting this transient"
             )
+            _persist_sim(run_dir, sim)
             return
 
-        sim["status"] = "running_transient"
+        check_cancel()
+        set_status("running_transient", "transient scan (GPU)")
         data = run_powered_transient(maps, p_settings, cfg, initial_angle)
 
         # --- energy-balance validity check (audit: 失败如实报告) ---
-        dt = p_settings.dt
         i_hist = np.asarray(data["currents_A"])[1:]
         e_elec = float(np.sum(data["electrical_power_W"])) * dt
         e_joule = float(np.sum(np.sum(i_hist ** 2, axis=1)
                                * p_settings.phase_resistance)) * dt
         e_mech = float(np.sum(data["mechanical_power_W"])) * dt
-        mag = 0.5 * p_settings.phase_inductance * float(
+        mag_e = 0.5 * p_settings.phase_inductance * float(
             np.sum(i_hist[-1] ** 2))
-        imbalance = abs(e_mech + e_joule + mag - e_elec) / max(
+        imbalance = abs(e_mech + e_joule + mag_e - e_elec) / max(
             abs(e_elec), abs(e_joule), 1e-9)
 
         sim["status"] = "done"
@@ -468,6 +637,7 @@ def _run_simulation_thread(
         }
         sim["settings"] = {
             "voltage": voltage,
+            "voltage_definition": "相电压峰值 (phase voltage peak)",
             "current_limit": current_limit,
             "initial_angle": initial_angle,
             "steps": steps,
@@ -475,15 +645,25 @@ def _run_simulation_thread(
             "load_torque": load_torque,
             "load_viscous": load_viscous,
             "rotor_inertia": rotor_inertia,
+            "control_mode": control_mode,
+            "i_q_ref_A": i_q_ref,
+            "power_off_at_s": power_off_at,
+            "include_windage": include_windage,
             "phase_resistance": electrical.phase_resistance,
             "phase_inductance": electrical.phase_inductance,
             "flux_linkage": electrical.flux_linkage,
         }
+        _persist_sim(run_dir, sim)
+    except _Cancelled:
+        sim["status"] = "cancelled"
+        sim["error"] = "用户取消"
+        _persist_sim(run_dir, sim)
     except Exception as e:
         sim["status"] = "failed"
         sim["error"] = str(e)
         import traceback
         sim["traceback"] = traceback.format_exc()
+        _persist_sim(run_dir, sim)
 
 
 app = create_app()

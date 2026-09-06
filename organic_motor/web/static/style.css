@@ -151,3 +151,7 @@ footer { margin-top: auto; padding-top: 6px; }
 .sim-playback span { font-size: 10px; color: var(--muted); white-space: nowrap; }
 #curvesCanvas { width: 100%; height: auto; margin-top: 4px; background: rgba(10,18,25,0.8); border-radius: 4px; }
 .slice-source { font-size: 10px; color: var(--muted); margin-top: 3px; min-height: 14px; }
+.view-controls { display: flex; gap: 6px; align-items: center; }
+.view-controls select { flex: 1; background: var(--bg2); border: 1px solid var(--line); color: var(--text); padding: 3px 4px; border-radius: 3px; font-size: 11px; }
+.vnote { font-size: 10px; color: var(--muted); margin-top: 2px; }
+#explodeRange { width: 100%; }
