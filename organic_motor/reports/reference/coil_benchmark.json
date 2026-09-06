@@ -1,0 +1,65 @@
+{
+  "timestamp": "2026-09-06T13:05:55",
+  "inputs": {
+    "radius_m": 0.02,
+    "current_A": 5.0,
+    "z_samples_mm": [
+      3,
+      5,
+      10,
+      20,
+      30
+    ],
+    "grid": [
+      64,
+      64,
+      64
+    ],
+    "maxiter": 240
+  },
+  "solver": "organic_motor forward3d_fields (voxel, impressed)",
+  "reference": "analytic Biot-Savart circular loop",
+  "checks": [
+    {
+      "quantity": "B_z(z=3 mm)",
+      "ours_T": 0.00015239539789035916,
+      "reference_T": 0.00015192348073539985,
+      "rel_error": 0.003106281877396104,
+      "passed": true,
+      "tolerance": 0.25
+    },
+    {
+      "quantity": "B_z(z=5 mm)",
+      "ours_T": 0.0001430140109732747,
+      "reference_T": 0.00014342553183020282,
+      "rel_error": 0.0028692301271387144,
+      "passed": true,
+      "tolerance": 0.25
+    },
+    {
+      "quantity": "B_z(z=10 mm)",
+      "ours_T": 0.00011106958118034527,
+      "reference_T": 0.00011239703569665164,
+      "rel_error": 0.0118104050349605,
+      "passed": true,
+      "tolerance": 0.25
+    },
+    {
+      "quantity": "B_z(z=20 mm)",
+      "ours_T": 4.857852036366239e-05,
+      "reference_T": 5.5536036726979576e-05,
+      "rel_error": 0.12527931003649026,
+      "passed": true,
+      "tolerance": 0.25
+    },
+    {
+      "quantity": "B_z(z=30 mm)",
+      "ours_T": 2.219931411673315e-05,
+      "reference_T": 2.6809877867784566e-05,
+      "rel_error": 0.17197257569724286,
+      "passed": true,
+      "tolerance": 0.25
+    }
+  ],
+  "verified_envelope": "on-axis B_z within 25% for z in [3, 30] mm at R=20 mm, 64^3 grid, maxiter=240; reversal and 2x-scaling linearity verified exactly (see tests/test_reference_coil.py). This verifies the CURRENT DEPOSIT + magnetostatic solve on a coil \u2014 NOT motor-level torque accuracy."
+}

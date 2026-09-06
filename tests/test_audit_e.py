@@ -1,5 +1,7 @@
 """E1/E2/E3 tests: convergence summary, reference adapter registry, provenance."""
 
+import json
+
 import pytest
 import numpy as np
 
@@ -57,6 +59,29 @@ class TestReferenceAdapter:
         adapters = list_adapters()
         assert "femm" in adapters and adapters["femm"] is False
         assert "elmer" in adapters and adapters["elmer"] is False
+
+    def test_biot_savart_adapter_available_and_exact(self):
+        a = get_adapter("biot_savart_coil")
+        assert a.available()
+        r = a.solve_magnetostatic(
+            {"radius_m": 1.0, "current_A": 1.0, "z_samples_m": [0.0]})
+        mu0 = 4e-7 * np.pi
+        assert r.b_on_axis_T[0.0] == pytest.approx(mu0 / (2 * 1.0))
+
+    def test_reference_benchmark_persists_and_passes(self, tmp_path):
+        from organic_motor.physics.reference import run_reference_benchmark
+        out = tmp_path / "coil.json"
+        rec = run_reference_benchmark(out_path=out)
+        assert out.is_file()
+        data = json.loads(out.read_text())
+        assert data["inputs"]["radius_m"] == 0.020
+        assert len(data["checks"]) == 5
+        assert all(c["passed"] for c in rec["checks"])
+        # near-field must be much better than the envelope
+        near = min(rec["checks"], key=lambda c: c["rel_error"])
+        assert near["rel_error"] < 0.02
+        # verified envelope documented
+        assert "NOT motor-level" in rec["verified_envelope"]
 
     def test_unavailable_raises_loudly(self):
         a = get_adapter("femm")

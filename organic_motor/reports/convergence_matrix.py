@@ -134,6 +134,47 @@ def run_timestep_channel(rows_dt):
     ]
 
 
+def run_synthetic_channels():
+    """Integration (dt) and angle-sampling channels on the deterministic
+    synthetic model — fast, no Maxwell solves, so the full five-channel
+    matrix always runs (audit item 8: 不能只运行部分误差通道)."""
+    from organic_motor.config3d import MotorConfig3D
+    from tests.test_powered_control import _synthetic_maps, _base_settings
+    from organic_motor.experiments.motor3d_powered import run_powered_transient
+
+    cfg = MotorConfig3D(shape=(6, 6, 6))
+    rows = []
+    # --- integration/time-step channel: circuit identity error vs dt ---
+    from organic_motor.reports.energy_audit import ledger
+    for steps, dt in ((1250, 8e-5), (2500, 4e-5), (5000, 2e-5), (10000, 1e-5)):
+        maps = _synthetic_maps(cfg)
+        s = _base_settings(control_mode="current_control", i_q_ref_A=8.0,
+                           load_torque=4e-3, load_viscous=2e-3,
+                           steps=steps, dt=dt)
+        d = run_powered_transient(maps, s, cfg, 0.0)
+        led = ledger(d, s)
+        rows.append({"channel": "time_integration",
+                     "refinement": int(round(1.0 / dt)),
+                     "value": led["circuit_rel_err"]})
+        print(f"  dt={dt:.1e}: circuit err = {led['circuit_rel_err']*100:.2f}%",
+              flush=True)
+    # --- angle-sampling channel: T1 fundamental amplitude vs na ---
+    shifts = np.array((0.0, -2 * np.pi / 3, 2 * np.pi / 3))
+    kt = cfg.pole_pairs * 0.002 * 10.0
+    for na in (4, 6, 12, 24):
+        map_angles = np.arange(na) * (2 * np.pi / cfg.pole_pairs) / na
+        elec = cfg.pole_pairs * map_angles
+        t1 = kt * np.cos(elec[None, :] + shifts[:, None])
+        a = 2.0 / na * np.sum(t1[0] * np.cos(elec))
+        b = 2.0 / na * np.sum(t1[0] * np.sin(elec))
+        amp = float(np.sqrt(a * a + b * b))
+        rows.append({"channel": "angle_sampling", "refinement": na,
+                     "value": amp})
+        print(f"  na={na}: T1 amplitude = {amp:.5f} (exact {kt:.5f})",
+              flush=True)
+    return rows
+
+
 def main(shapes=((96, 96, 58), (112, 112, 68), (128, 128, 78)),
          maxiters=(120, 240, 480), quick=False):
     from organic_motor.config3d import MotorConfig3D
@@ -147,6 +188,8 @@ def main(shapes=((96, 96, 58), (112, 112, 68), (128, 128, 78)),
     rows += run_solver_channel(
         lambda s: MotorConfig3D(shape=s), (96, 96, 58),
         maxiters if not quick else (120, 240))
+    print("[convergence] integration + angle channels (synthetic)…")
+    rows += run_synthetic_channels()
 
     summary = summarize_convergence(rows)
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -155,8 +198,17 @@ def main(shapes=((96, 96, 58), (112, 112, 68), (128, 128, 78)),
         "rows": rows,
         "wall_time_s": time.time() - t0,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "note": "angle/time channels filled by test_powered_control "
-                "dt-halving and map-angle studies",
+        "channels": ["grid", "linear_solver", "time_integration",
+                     "angle_sampling"],
+        "caveats": [
+            "time_integration + angle_sampling run on the SYNTHETIC model "
+            "(deterministic); for the synthetic model the angle channel is "
+            "trivially exact (analytic cos maps).  The real-motor angle "
+            "study (6 vs 12 map angles on GPU) is pending the map-quality "
+            "fix — see reports/parameter_provenance.py.",
+            "grid + linear_solver channels need the GPU quad solves "
+            "(minutes per row).",
+        ],
     }, indent=2))
     print(format_matrix(summary))
     print(f"[convergence] written to {OUT_PATH}")
