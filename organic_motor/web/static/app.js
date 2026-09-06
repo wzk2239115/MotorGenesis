@@ -176,8 +176,12 @@ async function showCheckpoint(run, step, level) {
     rotorGroup.name = "rotor";
     assemblyGroup.add(statorGroup, rotorGroup);
 
-    model.traverse((o) => {
-      if (!o.isMesh) return;
+    // Collect meshes first — reparenting inside traverse would splice
+    // the children array mid-iteration, causing children[i] to be undefined.
+    const meshes = [];
+    model.traverse((o) => { if (o.isMesh) meshes.push(o); });
+
+    for (const o of meshes) {
       o.castShadow = true;
       o.receiveShadow = true;
       const name = (o.name || o.parent?.name || "");
@@ -204,7 +208,7 @@ async function showCheckpoint(run, step, level) {
       // Motion group by name prefix — the ONLY thing that rotates.
       const target = name.toLowerCase().includes("rotor") ? rotorGroup : statorGroup;
       reparentKeepWorld(o, target);
-    });
+    }
     scene.add(assemblyGroup);
 
     // Frame the camera on the whole assembly.
