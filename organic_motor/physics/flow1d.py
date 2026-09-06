@@ -267,7 +267,7 @@ def compare_channels(
     R_helix = 0.045
     pitch = 0.015
     n_turns = 3.0
-    L_helix = math.sqrt(R_helix**2 + (pitch / (2 * math.pi))**2) * 2 * math.pi * n_turns
+    L_helix = math.sqrt(R_helix**2 + (pitch / (2 * np.pi))**2) * 2 * np.pi * n_turns
     results.append(evaluate_channel(
         "helical", L_helix, diameter_m, pump_power_W,
         heat_load_W=heat_load_W,
@@ -275,3 +275,281 @@ def compare_channels(
     ))
 
     return results
+
+
+# ============================================================
+# D1: node/branch flow network (pressure solver + heat mixing)
+# ============================================================
+
+import numpy as np
+
+
+@dataclass
+class Branch:
+    """One pipe segment between two nodes."""
+    name: str
+    from_node: str
+    to_node: str
+    length_m: float
+    diameter_m: float
+    minor_loss_K: float = 0.0
+    heat_load_W: float = 0.0
+    helix_radius_m: float | None = None
+    channel_type: str = "straight"
+
+
+@dataclass
+class PumpCurve:
+    """Quadratic pump curve dp(Q) = dp_max * (1 - (Q/Q_max)^2)."""
+    dp_max_Pa: float
+    Q_max_m3s: float
+
+    def dp(self, Q: float) -> float:
+        q = max(min(Q / self.Q_max_m3s, 1.0), -1.0)
+        return self.dp_max_Pa * (1.0 - q * q)
+
+
+class NetworkSolution(NamedTuple):
+    converged: bool
+    iterations: int
+    node_pressures_Pa: dict
+    branch_flows_kg_s: dict      # signed: + means from_node -> to_node
+    branch_results: dict         # name -> FlowResult-style dict
+    inlet_flow_kg_s: float
+    outlet_temps_C: dict
+    heat_removed_W: float
+    applicable: bool
+    notes: str
+
+
+def _branch_resistance(br: Branch, m_dot: float) -> tuple[float, float, float, bool, str]:
+    """Resistance R (dp = R*m*|m|), plus (Re, f, applicable, note)."""
+    A = math.pi * br.diameter_m ** 2 / 4.0
+    re = abs(m_dot) * br.diameter_m / (A * MU_WATER) if A > 0 else 0.0
+    dean = 0.0
+    if br.channel_type == "helical" and br.helix_radius_m:
+        dean = re * math.sqrt(br.diameter_m / (2.0 * br.helix_radius_m))
+    f = friction_factor(re, dean)
+    R = (f * br.length_m / br.diameter_m + br.minor_loss_K) / (2.0 * RHO_WATER * A * A)
+    ok = True
+    notes = []
+    if 2300 < re < 10000:
+        ok = False
+        notes.append(f"{br.name}: transitional Re={re:.0f}")
+    if re > 1e5:
+        ok = False
+        notes.append(f"{br.name}: Re>1e5 Blasius invalid")
+    if br.channel_type == "helical" and dean > 1000:
+        ok = False
+        notes.append(f"{br.name}: De={dean:.0f} Ito invalid")
+    return R, re, f, ok, "; ".join(notes)
+
+
+def solve_network(
+    branches: list[Branch],
+    boundary_pressure_Pa: dict,
+    inlet_temp_C: float = 40.0,
+    pump: PumpCurve | None = None,
+    tol: float = 1e-7,
+    max_iter: int = 60,
+) -> NetworkSolution:
+    """Solve nodal pressures (Newton) with outer friction iteration.
+
+    Boundary nodes have fixed pressures; the pump (if given) adds its
+    head to the branch connected from a node named 'source'.
+    Mass is conserved exactly at every internal node; temperatures are
+    propagated by flow-direction traversal with mixing.
+    """
+    node_set = set()
+    for b in branches:
+        node_set.update((b.from_node, b.to_node))
+    for n in boundary_pressure_Pa:
+        if n not in node_set:
+            raise ValueError(f"boundary node {n!r} not on any branch")
+    internal = sorted(node_set - set(boundary_pressure_Pa))
+    index = {n: i for i, n in enumerate(internal)}
+    n_int = len(internal)
+
+    p = {n: boundary_pressure_Pa.get(n, 1.0e5) for n in node_set}
+    R = {}
+    # initialize branch resistances once, then fixed-point on friction
+    for b in branches:
+        R[b.name], *_ = _branch_resistance(b, 0.05)
+    info = {}
+    converged = False
+    it_total = 0
+    flows = {b.name: 0.0 for b in branches}
+    prev_total_Q = 0.0  # pump curve operating point [m3/s]
+
+    for outer in range(20):
+        for it in range(max_iter):
+            it_total += 1
+            g = np.zeros(n_int)
+            J = np.zeros((n_int, n_int))
+            flows = {}
+            for b in branches:
+                dp = p[b.from_node] - p[b.to_node]
+                if pump is not None and b.from_node == "source":
+                    dp += pump.dp(prev_total_Q)
+                Rb = R[b.name]
+                if abs(dp) < 1e-9:
+                    m = 0.0
+                    dmdp = 1.0 / (2.0 * math.sqrt(Rb * 1e-9))
+                else:
+                    s = 1.0 if dp > 0 else -1.0
+                    m = s * math.sqrt(abs(dp) / Rb)
+                    dmdp = 1.0 / (2.0 * math.sqrt(Rb * abs(dp)))
+                flows[b.name] = m
+                i_f, i_t = index.get(b.from_node), index.get(b.to_node)
+                if i_f is not None:
+                    g[i_f] += m
+                    J[i_f, i_f] += dmdp
+                    if i_t is not None:
+                        J[i_f, i_t] -= dmdp
+                if i_t is not None:
+                    g[i_t] -= m
+                    J[i_t, i_t] += dmdp
+                    if i_f is not None:
+                        J[i_t, i_f] -= dmdp
+            flows["__prev_total__"] = sum(
+                flows[b.name] for b in branches if b.from_node == "source"
+            )
+            prev_total_Q = abs(flows["__prev_total__"]) / RHO_WATER
+            if n_int == 0 or np.max(np.abs(g)) < tol:
+                break
+            try:
+                delta = np.linalg.solve(J, -g)
+            except np.linalg.LinAlgError:
+                break
+            step = np.linalg.norm(delta)
+            for n, i in index.items():
+                p[n] = max(p[n] + delta[i], 1.0)  # keep physical
+        inner_ok = n_int == 0 or np.max(np.abs(g)) < tol
+        # outer friction update with converged flows
+        changed = False
+        for b in branches:
+            R_new, re_, f_, ok_, note_ = _branch_resistance(b, flows[b.name])
+            info[b.name] = (re_, f_, ok_, note_)
+            if abs(R_new - R[b.name]) / max(R[b.name], 1e-12) > 1e-3:
+                changed = True
+            R[b.name] = R_new
+        converged = inner_ok and not changed
+        if converged:
+            break
+
+    # --- temperature propagation (BFS from boundaries with known T) ---
+    T = {n: None for n in node_set}
+    for n, pv in boundary_pressure_Pa.items():
+        if n.endswith("+") or n == "inlet" or n == "source":
+            T[n] = inlet_temp_C
+    T.setdefault("source", inlet_temp_C)
+    if T.get("inlet") is None:
+        T["inlet"] = inlet_temp_C
+    for _ in range(len(node_set) + 2):
+        for b in branches:
+            m = flows[b.name]
+            if m > 1e-12:
+                t_in = T[b.from_node]
+                if t_in is not None:
+                    dT = b.heat_load_W / (m * CP_WATER)
+                    t_out = t_in + dT
+                    if T[b.to_node] is None:
+                        T[b.to_node] = t_out
+                    else:
+                        # mixing handled after full pass below
+                        pass
+        # mixing pass: recompute mixed temperatures from upstream
+        for n in node_set:
+            if n in boundary_pressure_Pa and T.get(n) is not None:
+                continue
+            m_in = 0.0
+            h_sum = 0.0
+            for b in branches:
+                if b.to_node == n and flows[b.name] > 1e-12 and T[b.from_node] is not None:
+                    m_b = flows[b.name]
+                    m_in += m_b
+                    h_sum += m_b * (
+                        T[b.from_node]
+                        + b.heat_load_W / (m_b * CP_WATER)
+                    )
+            if m_in > 1e-12:
+                T[n] = h_sum / m_in
+
+    # per-branch thermal detail
+    branch_results = {}
+    all_ok = True
+    notes = []
+    for b in branches:
+        re_, f_, ok_, note_ = info.get(b.name, (0, 0, True, ""))
+        all_ok = all_ok and ok_
+        if note_:
+            notes.append(note_)
+        m = abs(flows[b.name])
+        A = math.pi * b.diameter_m ** 2 / 4.0
+        v = m / (RHO_WATER * A) if A > 0 else 0.0
+        dean = 0.0
+        if b.channel_type == "helical" and b.helix_radius_m:
+            dean = re_ * math.sqrt(b.diameter_m / (2.0 * b.helix_radius_m))
+        nu = nusselt_number(re_, PR_WATER, dean)
+        h_conv = nu * K_WATER / b.diameter_m
+        surf = math.pi * b.diameter_m * b.length_m
+        dT = b.heat_load_W / (m * CP_WATER) if m > 1e-12 else float("inf")
+        t_avg = ((T.get(b.from_node) or inlet_temp_C)
+                 + (T.get(b.to_node) or inlet_temp_C)) / 2.0
+        t_wall = t_avg + (b.heat_load_W / (h_conv * surf) if surf > 0 else 0.0)
+        branch_results[b.name] = {
+            "flow_kg_s": flows[b.name], "reynolds": re_,
+            "friction_factor": f_, "velocity_ms": v,
+            "h_conv_W_m2K": h_conv, "dT_K": dT,
+            "wall_temp_C": t_wall, "applicable": ok_,
+        }
+
+    inlet_flow = sum(
+        flows[b.name] for b in branches if b.from_node in ("source", "inlet")
+    )
+    outlet_T = {}
+    heat_out = 0.0
+    for b in branches:
+        if b.to_node in boundary_pressure_Pa and b.to_node not in ("source", "inlet"):
+            m = flows[b.name]
+            if m > 0 and T.get(b.to_node) is not None:
+                outlet_T[b.to_node] = T[b.to_node]
+                heat_out += m * CP_WATER * (T[b.to_node] - inlet_temp_C)
+
+    if not notes:
+        notes.append("all branches within applicability range")
+    return NetworkSolution(
+        converged=converged, iterations=it_total,
+        node_pressures_Pa=p, branch_flows_kg_s={
+            b.name: flows[b.name] for b in branches
+        },
+        branch_results=branch_results,
+        inlet_flow_kg_s=inlet_flow,
+        outlet_temps_C=outlet_T,
+        heat_removed_W=heat_out,
+        applicable=all_ok,
+        notes="; ".join(notes),
+    )
+
+
+def network_from_manifold(manifold) -> list[Branch]:
+    """Map a BranchingManifold geometry to network branches (D1)."""
+    segs = manifold._segments()
+    L_in = float(np.sum(np.linalg.norm(np.diff(segs[0], axis=0), axis=1)))
+    L_b1 = float(np.sum(np.linalg.norm(np.diff(segs[1], axis=0), axis=1)))
+    L_b2 = float(np.sum(np.linalg.norm(np.diff(segs[2], axis=0), axis=1)))
+    D = 2.0 * manifold.channel_radius
+    return [
+        Branch("inlet", "source", "fork", L_in, D, minor_loss_K=0.3),
+        Branch("branch1", "fork", "out1", L_b1, D, minor_loss_K=1.0),
+        Branch("branch2", "fork", "out2", L_b2, D, minor_loss_K=1.0),
+    ]
+
+
+def network_from_helix(helix) -> list[Branch]:
+    """Map a HelicalChannelGenerator to a single network branch."""
+    D = 2.0 * helix.channel_radius
+    return [
+        Branch("helix", "source", "out", helix.centerline_length(), D,
+               helix_radius_m=helix.radius, channel_type="helical"),
+    ]
