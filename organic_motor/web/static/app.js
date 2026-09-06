@@ -751,6 +751,8 @@ async function startSimulation() {
   simState.runName = state.currentRun;
   $("simRunBtn").disabled = true;
   $("simStatus").textContent = "提交中…";
+  const ml = $("simModeLabel");
+  if (ml) ml.style.display = "none";
   try {
     const res = await fetch(`/api/runs/${encodeURIComponent(state.currentRun)}/simulate`, {
       method: "POST",
@@ -1006,7 +1008,16 @@ $("simSpinBtn").addEventListener("click", () => {
   if (!rotorGroup) { status("请先加载模型", "error"); return; }
   manualSpin.active = !manualSpin.active;
   $("simSpinBtn").textContent = manualSpin.active ? "⏸ 停止旋转" : "🔄 手动旋转";
-  if (manualSpin.active) status("手动旋转中 (300 rpm)", "");
+  if (manualSpin.active) {
+    status("手动演示旋转 (300 rpm) · 无物理求解", "");
+    $("simStatus").textContent = "手动演示 · 无物理求解";
+    const ml = $("simModeLabel");
+    if (ml) ml.style.display = "";
+  } else {
+    $("simStatus").textContent = "未运行";
+    const ml = $("simModeLabel");
+    if (ml) ml.style.display = "none";
+  }
 });
 $("simSpeed")?.addEventListener("change", (e) => {
   simState.playSpeed = parseFloat(e.target.value);
