@@ -11,12 +11,26 @@
   <aside id="sidebar">
     <header>
       <h1>MotorGenesis</h1>
-      <p class="tag">有机电机 · 形态发生实时观察台</p>
+      <p class="tag">有机形态 · 零件装配 · 原型制造</p>
     </header>
 
     <section class="panel">
       <label for="runSelect">运行实例</label>
       <select id="runSelect"><option value="">加载中…</option></select>
+    </section>
+
+    <section class="panel parts-panel">
+      <div class="parts-heading"><span class="eyebrow">BUILD / 01</span><h2>从形态到零件</h2></div>
+      <p class="vnote">FDM 模具 → 树脂 / 四氧化三铁浇注磁芯<br>铜线绕制 · 磁钢采购 · 结构件配合试制</p>
+      <div class="part-actions">
+        <button id="explodeParts">展开全部零件</button>
+        <button id="revealOrganic">查看蜂窝 / 螺旋</button>
+        <button id="restoreParts">恢复装配</button>
+      </div>
+      <div id="partList" class="part-list">选择模型以读取零件。</div>
+      <div id="partDetail" class="part-detail">点击零件查看制造路线。</div>
+      <div class="part-actions"><button id="partsDownload">零件包 · mm STL + 清单</button><button id="moldsDownload">磁芯分模样件 · mm STL</button></div>
+      <p class="vnote">样件未制造放行。复合磁芯需实测材料卡，不能沿用铁参数。蓝色流道为空腔。</p>
     </section>
 
     <section class="panel">
@@ -143,6 +157,7 @@
   </aside>
 
   <main id="viewport">
+    <div id="partLabels" aria-hidden="true"></div>
     <div id="loadOverlay" class="overlay">
       <div class="spinner"></div>
       <p id="loadText">初始化…</p>

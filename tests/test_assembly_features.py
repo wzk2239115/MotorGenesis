@@ -23,7 +23,7 @@ class TestEndCap:
 
     def test_bearing_bore_exists(self, cfg):
         """Bearing bore: no material well inside bearing OD radius."""
-        cap = EndCapGenerator(bearing_od=0.014).build(cfg)
+        cap = EndCapGenerator(bearing_od=0.028).build(cfg)
         cx, cy, cz = cfg.center
         z_half = cfg.stator_half_length
         z_check = z_half + 0.003  # mid-cap
@@ -153,3 +153,32 @@ class TestMountingFlange:
             assert flange.sdf[ix, iy, iz] > 0, (
                 f"mount hole {i} at ({hx:.4f}, {hy:.4f}) is not void"
             )
+
+
+def test_bearing_dimension_contract():
+    cfg=MotorConfig3D(shape=(24,24,24))
+    with pytest.raises(ValueError,match="直径"):
+        EndCapGenerator(bearing_od=.014).build(cfg)
+
+
+def test_register_protrudes_toward_housing():
+    # A point inside the lip, but outside the original cap disk.
+    from types import SimpleNamespace
+    gen=EndCapGenerator(include_wire_exit=False)
+    z_inner=.030+gen.cap_gap
+    cfg=SimpleNamespace(shape=(3,3,3),origin=(.0484,-.0001,z_inner-.0011),
+                        spacing=(.0001,)*3,center=(0,0,0),stator_half_length=.030,
+                        R_shaft=.008,R_design=.05,R_winding_outer=.043)
+    cap=gen.build(cfg)
+    assert cap.sdf[1,1,1]<0
+
+
+def test_endcaps_translate_with_center():
+    from types import SimpleNamespace
+    cfg=MotorConfig3D(shape=(28,28,28))
+    shift=np.array([.004,-.003,.007])
+    moved=SimpleNamespace(shape=cfg.shape,origin=np.array(cfg.origin)+shift,
+        spacing=cfg.spacing,center=np.array(cfg.center)+shift,
+        stator_half_length=cfg.stator_half_length,R_shaft=cfg.R_shaft,
+        R_design=cfg.R_design,R_winding_outer=cfg.R_winding_outer)
+    assert np.allclose(EndCapGenerator().build(cfg).sdf,EndCapGenerator().build(moved).sdf,atol=1e-7)

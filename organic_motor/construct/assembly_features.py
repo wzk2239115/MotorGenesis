@@ -31,7 +31,7 @@ class EndCapGenerator:
     """
     cap_thickness: float = 0.004       # axial thickness [m]
     cap_gap: float = 0.001             # gap from stator end to cap inner face
-    bearing_od: float = 0.014          # bearing outer diameter [m]
+    bearing_od: float = 0.028          # bearing outer diameter [m]
     bearing_width: float = 0.004       # bearing seat depth [m]
     register_depth: float = 0.002      # locating register lip depth [m]
     register_clearance: float = 0.0003 # register radial clearance [m]
@@ -45,12 +45,20 @@ class EndCapGenerator:
     include_wire_exit: bool = True
 
     def build(self, cfg: MotorConfig3D) -> SDFVoxelField:
+        if self.cap_thickness <= 0 or not 0 < self.bearing_width <= self.cap_thickness:
+            raise ValueError("轴承座深度必须大于零且不超过端盖厚度")
+        if not 2*cfg.R_shaft < self.bearing_od < 2*self.flange_outer_radius:
+            raise ValueError("bearing_od 是直径，必须大于轴径且小于端盖外径")
+        if self.n_bolts < 0 or self.bolt_hole_radius <= 0:
+            raise ValueError("孔数不能为负，孔半径必须大于零")
+        if self.bolt_circle_radius + self.bolt_hole_radius >= self.flange_outer_radius:
+            raise ValueError("螺栓孔越出端盖边界")
         X, Y, Z = _grid_arrays(cfg)
         cx, cy, cz = cfg.center
+        Z = Z - cz
         x = X - cx
         y = Y - cy
         R = np.sqrt(x**2 + y**2)
-        theta = np.arctan2(y, x)
 
         z_half = cfg.stator_half_length
         t = self.cap_thickness
@@ -65,19 +73,7 @@ class EndCapGenerator:
             # --- Cap disk: R_shaft to flange_outer ---
             r_inner = float(cfg.R_shaft)
             r_outer = self.flange_outer_radius
-            cyl_sdf = np.maximum(
-                r_inner - R,
-                np.maximum(R - r_outer,
-                           np.maximum(np.minimum(Z - z_inner, z_inner - Z),
-                                      np.minimum(Z - z_outer, z_outer - Z)))
-            )
-            # Actually build it properly: inside if r_inner < R < r_outer AND z_inner..z_outer
-            # SDF negative inside:
-            disk_radial = np.maximum(r_inner - R, R - r_outer)  # neg inside annulus
-            disk_axial = np.maximum(np.minimum(Z - z_inner, z_inner - Z) if sign > 0
-                                    else np.minimum(Z - z_outer, z_outer - Z),
-                                    1e6)
-            # Simpler: inside if between z_inner and z_outer (for sign=+1: z_inner < Z < z_outer)
+            disk_radial = np.maximum(r_inner - R, R - r_outer)
             if sign > 0:
                 disk_axial = np.maximum(z_inner - Z, Z - z_outer)
             else:
@@ -92,7 +88,7 @@ class EndCapGenerator:
                 bearing_axial = np.maximum(bearing_z_inner - Z, Z - bearing_z_outer)
             else:
                 bearing_axial = np.maximum(bearing_z_outer - Z, Z - bearing_z_inner)
-            bearing_bore = np.maximum(R - self.bearing_od, bearing_axial)
+            bearing_bore = np.maximum(R - self.bearing_od * 0.5, bearing_axial)
             # Subtract bearing bore from cap (make it void)
             cap_sdf = np.maximum(cap_sdf, -bearing_bore)
 
@@ -101,9 +97,9 @@ class EndCapGenerator:
             reg_r_out = float(cfg.R_design) - self.register_clearance
             reg_radial = np.maximum(reg_r_in - R, R - reg_r_out)
             if sign > 0:
-                reg_axial = np.maximum(z_inner - Z, Z - (z_inner + sign * self.register_depth))
+                reg_axial = np.maximum(z_inner - self.register_depth - Z, Z - z_inner)
             else:
-                reg_axial = np.maximum((z_inner + sign * self.register_depth) - Z, Z - z_inner)
+                reg_axial = np.maximum(z_inner - Z, Z - (z_inner + self.register_depth))
             # Register is ADDITIONAL material (lip protrudes inward)
             reg_sdf = np.maximum(reg_radial, reg_axial)
             cap_sdf = np.minimum(cap_sdf, reg_sdf)

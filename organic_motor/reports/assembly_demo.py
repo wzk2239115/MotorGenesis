@@ -124,7 +124,7 @@ def build_motor_with_assembly(cfg: MotorConfig3D | None = None) -> tuple:
 
 
 def export_checkpoint(mf, cfg, out_dir: Path, motor=None,
-                      support_mask=None, housing_mask=None):
+                      support_mask=None, housing_mask=None, endcap_mask=None):
     """Save MaterialField as versioned ModelArtifact for web viewer + simulation.
 
     If motor is provided, saves magnetization and motion groups too.
@@ -142,6 +142,7 @@ def export_checkpoint(mf, cfg, out_dir: Path, motor=None,
     if housing_mask is not None:
         artifact.housing_mask = housing_mask
 
+    artifact.endcap_mask = endcap_mask
     npz_path = artifact.save(out_dir)
     print(f"  Artifact saved: {npz_path}")
     print(f"  Design hash: {artifact.design_hash}")
@@ -446,7 +447,9 @@ if __name__ == "__main__":
 
     if "--full" in sys.argv or "--motor" in sys.argv:
         print("=== MOTOR + ASSEMBLY (full) ===")
-        cfg = MotorConfig3D(shape=(96, 96, 58))
+        cfg = MotorConfig3D(shape=(128, 128, 96))
+        from organic_motor.construct.prototype_spec import OrganicPrototypeSpec
+        spec = OrganicPrototypeSpec()
         from organic_motor.construct.objects import field_driven_motor
         motor = field_driven_motor(cfg)
         mf = motor.build()
@@ -464,7 +467,7 @@ if __name__ == "__main__":
         honeycomb = HoneycombGenerator(
             r_inner=r_support_inner, r_outer=r_support_outer,
             z_bottom=-z_half, z_top=z_half,
-            cell_size=0.004, wall_thickness=0.0008,
+            cell_size=spec.honeycomb_cell_m, wall_thickness=spec.honeycomb_wall_m,
         ).build(cfg)
         mf.add(honeycomb, "iron", priority=False)
 
@@ -478,10 +481,11 @@ if __name__ == "__main__":
 
         helix = HelicalChannelGenerator(
             radius=(r_support_inner + r_support_outer) / 2,
-            pitch=2 * z_half / 4.0, n_turns=4.0,
-            channel_radius=0.0015, z_start=-z_half + 0.002,
+            pitch=2 * z_half / spec.helix_turns, n_turns=spec.helix_turns,
+            channel_radius=spec.helix_radius_m, z_start=-z_half + 0.002,
             handedness=1, n_segments=200,
         ).build(cfg)
+        prototype_verdict = spec.validate(cfg, honeycomb, helix)
         coolant_sdf = helix.sdf
         coolant_field = SDFVoxelField(
             coolant_sdf.astype(np.float32), cfg.spacing, cfg.origin)
@@ -502,7 +506,9 @@ if __name__ == "__main__":
 
         out_dir = Path(__file__).parent.parent / "out" / "assembly"
         export_checkpoint(mf, cfg, out_dir, motor=motor,
-                          support_mask=support_mask, housing_mask=housing_mask)
+                          support_mask=support_mask, housing_mask=housing_mask,
+                          endcap_mask=endcap_mask)
+        (out_dir / "prototype_spec.json").write_text(json.dumps(prototype_verdict, ensure_ascii=False, indent=2))
         print(f"\n  Materials: {mf.materials_present()}")
         print(f"  Support voxels: {int(support_mask.sum())}")
         print(f"  Housing voxels: {int(housing_mask.sum())}")

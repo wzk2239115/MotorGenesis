@@ -155,3 +155,20 @@ footer { margin-top: auto; padding-top: 6px; }
 .view-controls select { flex: 1; background: var(--bg2); border: 1px solid var(--line); color: var(--text); padding: 3px 4px; border-radius: 3px; font-size: 11px; }
 .vnote { font-size: 10px; color: var(--muted); margin-top: 2px; }
 #explodeRange { width: 100%; }
+
+.parts-panel { border-color: #486050; background: linear-gradient(145deg,#162a29,#101b24); }
+.parts-heading h2 { margin: 4px 0 12px; font-size: 22px; color:#e6efe8; }
+.eyebrow { font-size:10px; letter-spacing:3px; color:#c7d99a; }
+.part-list { display:grid; gap:5px; margin:12px 0; max-height:285px; overflow:auto; }
+.part-row { display:flex; gap:8px; align-items:center; padding:7px; border:1px solid #31434b; border-radius:6px; }
+.part-row button { flex:1; text-align:left; background:transparent; border:0; padding:2px; color:#dfe7e5; }
+.part-row.active { border-color:#d8ad69; background:#3b3327; }
+.part-detail { padding:12px; background:#0b151c; border-left:2px solid #d8ad69; font-size:12px; line-height:1.7; min-height:70px; white-space:pre-line; }
+.part-actions { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+.part-actions button { flex:1; padding:8px; font-size:11px; }
+
+.part-actions button { background:#263d42; border:1px solid #54716a; color:#edf1e9; border-radius:6px; cursor:pointer; }
+.part-actions button:hover { background:#426258; }
+
+#partLabels { position:absolute; inset:0; pointer-events:none; z-index:2; overflow:hidden; }
+#partLabels span { position:absolute; top:0; left:0; white-space:nowrap; background:#153237df; border:1px solid #8ea9a7; color:#fff; padding:4px 7px; border-radius:5px; font-size:11px; }

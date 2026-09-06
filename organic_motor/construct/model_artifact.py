@@ -157,6 +157,8 @@ class ModelArtifact:
     support_mask: np.ndarray | None = None  # honeycomb/support iron
     housing_mask: np.ndarray | None = None  # outer wall iron
 
+    endcap_mask: np.ndarray | None = None
+
     @classmethod
     def from_motor(cls, motor, mf, cfg) -> "ModelArtifact":
         """Build artifact from a Motor + MaterialField + config."""
@@ -286,6 +288,9 @@ class ModelArtifact:
         if self.housing_mask is not None:
             arrays["housing_mask"] = self.housing_mask.astype(np.float32)
 
+        if self.endcap_mask is not None:
+            arrays["endcap_mask"] = self.endcap_mask.astype(np.float32)
+
         reg_arrays = _registry_to_arrays(self.centerline_registry)
         for k, v in reg_arrays.items():
             if isinstance(v, str):
@@ -371,6 +376,8 @@ class ModelArtifact:
             if "housing_mask" in data.files:
                 housing_mask = np.asarray(data["housing_mask"], dtype=np.float32)
 
+            endcap_mask = np.asarray(data["endcap_mask"], dtype=np.float32) if "endcap_mask" in data.files else None
+
         shape = tuple(densities["rho_iron"].shape)
 
         return cls(
@@ -390,6 +397,7 @@ class ModelArtifact:
             rotor_mask=rotor_mask,
             support_mask=support_mask,
             housing_mask=housing_mask,
+            endcap_mask=endcap_mask,
         )
 
     def can_energize(self) -> tuple[bool, list[str]]:

@@ -19,7 +19,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import (
@@ -56,8 +56,8 @@ if BaseModel is not None:
         rotor_inertia: float = Field(2.0e-4, gt=0.0, le=10.0)
         control_mode: str = Field("open_loop",
                                   pattern="^(open_loop|current_control)$")
-        i_q_ref_A: float | None = Field(None, ge=-1000.0, le=1000.0)
-        power_off_at_s: float | None = Field(None, ge=0.0)
+        i_q_ref_A: Optional[float] = Field(None, ge=-1000.0, le=1000.0)
+        power_off_at_s: Optional[float] = Field(None, ge=0.0)
         include_windage: bool = False
 else:  # pragma: no cover
     class SimRequest:  # type: ignore[no-redef]
@@ -155,7 +155,7 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
             raise HTTPException(status_code=404, detail="checkpoint not found")
         npz_mtime = npz.stat().st_mtime
         cache = _glb_cache_path(run_dir, step, level, smoothing, iterations, npz_mtime,
-                                extra=view)
+                                extra="parts-v1-"+view)
         if not cache.is_file():
             glb = builder.checkpoint_to_glb(
                 npz,
@@ -166,6 +166,32 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
             )
             cache.write_bytes(glb)
         return Response(content=cache.read_bytes(), media_type="model/gltf-binary")
+
+    @app.get("/api/runs/{run_name}/checkpoint/{step}/parts")
+    def get_parts(run_name: str, step: int):
+        from organic_motor.web.parts import part_meshes, manifest
+        path = _find_run(run_name) / "checkpoints" / f"step_{step:06d}.npz"
+        if not path.is_file():
+            raise HTTPException(404, "checkpoint not found")
+        return manifest(path, list(part_meshes(path)))
+
+    @app.get("/api/runs/{run_name}/checkpoint/{step}/molds.zip")
+    def get_molds_zip(run_name: str, step: int):
+        from organic_motor.web.parts import mold_package
+        path = _find_run(run_name) / "checkpoints" / f"step_{step:06d}.npz"
+        if not path.is_file():
+            raise HTTPException(404, "checkpoint not found")
+        return Response(mold_package(path), media_type="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="stator-casting-fit-test.zip"'})
+
+    @app.get("/api/runs/{run_name}/checkpoint/{step}/parts.zip")
+    def get_parts_zip(run_name: str, step: int):
+        from organic_motor.web.parts import package
+        path = _find_run(run_name) / "checkpoints" / f"step_{step:06d}.npz"
+        if not path.is_file():
+            raise HTTPException(404, "checkpoint not found")
+        return Response(package(path), media_type="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="motor-fit-check-parts.zip"'})
 
     @app.get("/api/runs/{run_name}/checkpoint/{step}/stl")
     def get_checkpoint_stl(
@@ -218,7 +244,7 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
         step: int,
         field: str = "temperature",
         axis: int = 2,
-        index: int | None = None,
+        index: Optional[int] = None,
     ) -> dict:
         run_dir = _find_run(run_name)
         npz = run_dir / "checkpoints" / f"step_{step:06d}.npz"
@@ -288,7 +314,7 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
         )
 
     @app.post("/api/runs/{run_name}/simulate")
-    async def start_simulation(run_name: str, body: SimRequest | None = None) -> dict:
+    async def start_simulation(run_name: str, body: Optional[SimRequest] = None) -> dict:
         """Start a powered transient simulation for this run.
 
         Typed + range-checked request body; the response echoes the

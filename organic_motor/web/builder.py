@@ -136,104 +136,14 @@ def checkpoint_to_glb(
     rotor group independently.
     """
     import trimesh
-
-    vol = apply_view(_load_volume(npz_path), view)
-
-    rotor_mask = None
-    support_mask = None
-    housing_mask = None
-    try:
-        with np.load(npz_path, allow_pickle=False) as data:
-            if "rotor_mask" in data.files:
-                rotor_mask = np.asarray(data["rotor_mask"], dtype=np.float32)
-            if "support_mask" in data.files:
-                support_mask = np.asarray(data["support_mask"], dtype=np.float32)
-            if "housing_mask" in data.files:
-                housing_mask = np.asarray(data["housing_mask"], dtype=np.float32)
-    except Exception:
-        pass
-
+    from organic_motor.web.parts import part_meshes
     scene = trimesh.Scene()
-
-    if rotor_mask is not None and "iron" in vol.materials:
-        iron = vol.materials["iron"]
-        # Split iron into: rotor_iron, support_iron, housing_iron, stator_iron
-        # using the masks (each mask is 1.0 in its region, 0.0 elsewhere).
-        # Priority: rotor > support > housing > stator (residual).
-        rotor_iron = (iron * rotor_mask).astype(np.float32)
-        remaining = iron * (1.0 - rotor_mask)
-
-        if support_mask is not None:
-            support_iron = (remaining * support_mask).astype(np.float32)
-            remaining = remaining * (1.0 - support_mask)
-        else:
-            support_iron = np.zeros_like(remaining)
-
-        if housing_mask is not None:
-            housing_iron = (remaining * housing_mask).astype(np.float32)
-            remaining = remaining * (1.0 - housing_mask)
-        else:
-            housing_iron = np.zeros_like(remaining)
-
-        stator_iron = remaining.astype(np.float32)
-
-        for name, density in [
-            ("rotor_iron", rotor_iron),
-            ("support_iron", support_iron),
-            ("housing_iron", housing_iron),
-            ("stator_iron", stator_iron),
-        ]:
-            if density.max(initial=0.0) < level:
-                continue
-            from organic_motor.geometry.voxel import VoxelVolume
-            sub_vol = VoxelVolume(
-                iron=density, pm=np.zeros_like(density),
-                spacing=vol.spacing, origin=vol.origin,
-            )
-            mesh = material_mesh(
-                sub_vol, "iron",
-                level=level, smoothing=smoothing,
-                smoothing_iterations=smoothing_iterations,
-            )
-            if mesh is not None:
-                scene.add_geometry(mesh, node_name=name, geom_name=name)
-    else:
-        for material in materials:
-            if material not in vol.materials:
-                continue
-            mesh = material_mesh(
-                vol, material,
-                level=level, smoothing=smoothing,
-                smoothing_iterations=smoothing_iterations,
-            )
-            if mesh is None:
-                continue
-            scene.add_geometry(mesh, node_name=material, geom_name=material)
-
-    for material in materials:
-        if material == "iron":
-            continue
-        if material not in vol.materials:
-            continue
-        mesh = material_mesh(
-            vol, material,
-            level=level, smoothing=smoothing,
-            smoothing_iterations=smoothing_iterations,
-        )
-        if mesh is None:
-            continue
-        node_name = f"rotor_{material}" if material == "pm" else material
-        scene.add_geometry(mesh, node_name=node_name, geom_name=node_name)
-
-    if len(scene.geometry) == 0:
-        return trimesh.Trimesh(vertices=np.zeros((3, 3)), faces=[[0, 1, 2]]).export(
-            file_type="glb"
-        )
+    for name, mesh in part_meshes(npz_path, level, smoothing, smoothing_iterations, view, materials):
+        scene.add_geometry(mesh, node_name=name, geom_name=name)
     return scene.export(file_type="glb")
 
 
 PHYSICS_FIELDS = {"temperature", "Bmag", "B", "Jmag", "J"}
-
 
 def _load_fields(npz_path: Path) -> tuple[dict, tuple, tuple]:
     """Load all arrays plus spacing/origin from an NPZ checkpoint."""

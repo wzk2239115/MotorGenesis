@@ -29,9 +29,10 @@ const pmrem = new THREE.PMREMGenerator(renderer);
 const envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1d23);
+scene.background = new THREE.Color(0xe7ecec);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x829298, 2.5));
 scene.environment = envTexture;
-scene.fog = new THREE.FogExp2(0x1a1d23, 3.5);
+scene.fog = null;
 
 const camera = new THREE.PerspectiveCamera(
   38, viewport.clientWidth / viewport.clientHeight, 0.0005, 5
@@ -69,7 +70,7 @@ scene.add(rim);
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(0.4, 0.4),
   new THREE.MeshStandardMaterial({
-    color: 0x111316,
+    color: 0xd8dfe0,
     metalness: 0.0,
     roughness: 0.92,
   })
@@ -105,6 +106,11 @@ function clearModel() {
   }
   if (currentModel) { disposeTree(currentModel); currentModel = null; }
   materialNodes.clear();
+  partRequest++;
+  partManifest=null;
+  $("partLabels").replaceChildren();
+  partNodes.clear();
+  $("partList").replaceChildren();
 }
 
 function loadGlb(url) {
@@ -128,6 +134,7 @@ function canonicalMaterial(name) {
   if (n.includes("stator_iron")) return "stator_iron";
   if (n.includes("support_iron")) return "support_iron";
   if (n.includes("housing_iron")) return "housing_iron";
+  if (n.includes("endcap_iron")) return "housing_iron";
   if (n.includes("iron")) return "iron";
   if (n.includes("copper")) return "copper";
   if (n.includes("pm")) return "pm";
@@ -140,8 +147,8 @@ const MAT_STYLE = {
   iron: { color: 0x4a5a6c, metalness: 0.92, roughness: 0.35, env: 1.2 },
   rotor_iron: { color: 0x3a4a5c, metalness: 0.92, roughness: 0.35, env: 1.2 },
   stator_iron: { color: 0x5a6a7c, metalness: 0.92, roughness: 0.35, env: 1.2 },
-  support_iron: { color: 0x6a5a3a, metalness: 0.85, roughness: 0.4, env: 1.0 },
-  housing_iron: { color: 0x4a4a5a, metalness: 0.9, roughness: 0.3, env: 1.1 },
+  support_iron: { color: 0xd6a558, metalness: 0.25, roughness: 0.4, env: 1.0 },
+  housing_iron: { color: 0x769898, metalness: 0.3, roughness: 0.3, env: 1.1 },
   copper: { color: 0xe07020, metalness: 0.95, roughness: 0.25, env: 1.5 },
   pm: { color: 0xc01030, metalness: 0.4, roughness: 0.4, env: 0.8, emissive: 0x300810 },
   coolant: { color: 0x30a0e0, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.5 },
@@ -167,7 +174,7 @@ async function showCheckpoint(run, step, level) {
   clearModel();
   resetSimState(); // model changed: old playback must not drive this one
   try {
-    const view = viewState.mode === "stator" ? "stator" : "full";
+    const view = "full"; // retain all part identities; views are client-side
     const url = `/api/runs/${encodeURIComponent(run)}/checkpoint/${step}/glb`
       + `?level=${level}&smoothing=taubin&iterations=5&view=${view}`;
     const model = await loadGlb(url);
@@ -220,6 +227,8 @@ async function showCheckpoint(run, step, level) {
       // Motion group by name prefix — the ONLY thing that rotates.
       const target = name.toLowerCase().includes("rotor") ? rotorGroup : statorGroup;
       reparentKeepWorld(o, target);
+      o.userData.home = o.position.clone();
+      partNodes.set(name, o);
     }
     scene.add(assemblyGroup);
 
@@ -229,7 +238,7 @@ async function showCheckpoint(run, step, level) {
     const center = box.getCenter(new THREE.Vector3());
     controls.target.copy(center);
     const maxDim = Math.max(size.x, size.y, size.z);
-    const dist = maxDim / (2 * Math.tan((camera.fov * Math.PI) / 360)) * 1.7;
+    const dist = maxDim / (2 * Math.tan((camera.fov * Math.PI) / 360)) * 1.15;
     camera.position
       .set(dist, dist * 0.75, dist * 1.1)
       .add(center);
@@ -240,11 +249,90 @@ async function showCheckpoint(run, step, level) {
     overlay.classList.add("hidden");
     status(`第 ${step} 步`, "");
     syncMaterialToggles();
+    loadPartManifest(run, step);
   } catch (err) {
     $("loadText").textContent = "加载失败";
     status(`加载失败: ${parseApiError(err)}`, "error");
     console.error(err);
   }
+}
+
+// Artifact-backed part explorer. Part visibility is independent of material color.
+const partNodes = new Map();
+let partManifest = null;
+let partRequest = 0;
+async function loadPartManifest(run, step) {
+  const token=++partRequest;
+  $("partDetail").textContent="读取零件尺寸与制造路线…";
+  try {
+    const response=await fetch(`/api/runs/${encodeURIComponent(run)}/checkpoint/${step}/parts`);
+    if (!response.ok) throw new Error(await response.text());
+    const data=await response.json();
+    if (token!==partRequest || state.currentRun!==run) return;
+    partManifest=data;
+    $("partLabels").replaceChildren();
+    for(const p of data.parts) {
+      const label=document.createElement('span');label.textContent=p.label;label.dataset.part=p.id;
+      $("partLabels").append(label);
+    }
+    renderPartList();
+    $("partDetail").textContent=`${data.parts.length} 个零件 / 功能组 · ${data.status}\n蜂窝：${data.required_morphology.honeycomb?'存在':'缺失，需重新生成装配'} · 螺旋空腔：${data.required_morphology.helix?'存在':'缺失'}\n点击名称隔离检查；勾选框控制单件显示。`;
+  } catch(e) { if(token===partRequest) $("partDetail").textContent=`零件清单读取失败：${e.message}`; }
+}
+function frameVisibleParts() {
+  const box=new THREE.Box3();
+  for(const node of partNodes.values()) if(node.visible) box.union(new THREE.Box3().setFromObject(node));
+  if(box.isEmpty()) return;
+  const center=box.getCenter(new THREE.Vector3()), size=box.getSize(new THREE.Vector3());
+  const extent=Math.max(size.x,size.y,size.z);
+  const dist=extent/(2*Math.tan(camera.fov*Math.PI/360))*1.6/Math.min(1,camera.aspect);
+  const direction=camera.position.clone().sub(controls.target).normalize();
+  camera.position.copy(center).addScaledVector(direction,dist);controls.target.copy(center);controls.update();
+}
+function renderPartList(selected=null) {
+  const host=$("partList");host.replaceChildren();
+  for(const p of partManifest?.parts || []) {
+    const node=partNodes.get(p.id); if(!node)continue;
+    const row=document.createElement('div');row.className='part-row'+(selected===p.id?' active':'');
+    const check=document.createElement('input');check.type='checkbox';check.checked=node.visible;
+    check.addEventListener('change',()=>{node.visible=check.checked;});
+    const button=document.createElement('button');button.textContent=p.label;
+    button.addEventListener('click',()=>{
+      pausePlayback();manualSpin.active=false;
+      statorGroup.visible=true;rotorGroup.visible=true;
+      for(const [id,n] of partNodes)n.visible=id===p.id;
+      $("partDetail").textContent=`${p.label} · ${p.process}\n尺寸 ${p.size_mm.join(' × ')} mm · ${p.components} 个连通体\n${p.watertight?'闭合网格':'网格未闭合'} ≠ 制造放行\n${p.note}`;
+      frameVisibleParts();renderPartList(p.id);
+    });
+    row.append(check,button);host.append(row);
+  }
+}
+function restorePartAssembly() {
+  viewState.mode='full';$("viewMode").value='full';
+  viewState.explode=0;$("explodeRange").value=0;$("explodeVal").textContent='0.00';
+  viewState.section=false;$("sectionToggle").checked=false;
+  for(const [id,n] of partNodes)n.visible=id!=='coolant';
+  applyViewMode();applyExplode();frameVisibleParts();renderPartList();
+}
+$("explodeParts").addEventListener('click',()=>{
+  restorePartAssembly();
+  viewState.explode=.8;$("explodeRange").value=.8;$("explodeVal").textContent='0.80';
+  applyExplode();frameVisibleParts();
+  $("partDetail").textContent='逐件爆炸 · 仅改变展示位置\n点击零件名隔离；导出的 STL 保留原始装配坐标。';
+});
+$("restoreParts").addEventListener('click',restorePartAssembly);
+$("revealOrganic").addEventListener('click',()=>{
+  restorePartAssembly();
+  for(const [id,n] of partNodes)n.visible=['support_iron','coolant'].includes(id);
+  viewState.explode=.6;$("explodeRange").value=.6;$("explodeVal").textContent="0.60";applyExplode();frameVisibleParts();
+  $("partDetail").textContent='蜂窝与螺旋检查\n蓝色体积是流道空腔，不是要打印的实体。\n检查孔洞、薄壁和入口出口；若无蜂窝，请生成新版 assembly。';
+  renderPartList();
+});
+for(const [button,file] of [['partsDownload','parts.zip'],['moldsDownload','molds.zip']]) {
+  $(button).addEventListener('click',()=>{
+    const step=state.steps[state.stepIndex];if(!state.currentRun || step===undefined)return;
+    window.location.href=`/api/runs/${encodeURIComponent(state.currentRun)}/checkpoint/${step}/${file}`;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -268,9 +356,22 @@ function applyViewMode() {
 function applyExplode() {
   if (!assemblyGroup) return;
   const e = viewState.explode;
-  // Display-only axial separation; rotor rotation stays about its own axis.
-  statorGroup.position.z = 0.045 * e;
-  rotorGroup.position.z = -0.045 * e;
+  // Each source part has its own displacement. None of these transforms
+  // enter physics or the STL export.
+  statorGroup.position.set(0,0,0);
+  rotorGroup.position.set(0,0,0);
+  for (const [id,node] of partNodes) {
+    const home = node.userData.home;
+    if (!home) continue;
+    const offsets = {
+      front_endcap_iron:[0,0,.075], rear_endcap_iron:[0,0,-.075],
+      housing_iron:[.085,0,0], support_iron:[-.075,0,0],
+      copper:[0,.07,0], insulator:[0,-.06,0], coolant:[.065,.055,0],
+      rotor_iron:[0,0,.035], rotor_pm:[0,0,.035],
+    };
+    const d=offsets[id] || [0,0,0];
+    node.position.copy(home).add(new THREE.Vector3(...d).multiplyScalar(e));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1148,7 @@ $("simTimeSlider").addEventListener("input", () => {
 // ---------------------------------------------------------------------------
 let last = performance.now();
 let frameCount = 0;
+let hudTime = last;
 function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
@@ -1060,12 +1162,24 @@ function animate() {
     rotorGroup.rotation.z = manualSpin.angle;
   }
   renderer.render(scene, camera);
-  frameCount++;
-  if (now - (animate._hud ?? now) > 500) {
-    if (animate._hud != null) {
-      $("fpsHud").textContent = `${Math.round(frameCount * 1000 / (now - animate._hud))} fps`;
+  for(const label of $("partLabels").children) {
+    const node=partNodes.get(label.dataset.part);
+    const show=node?.visible && node.parent?.visible && viewState.explode>.05;
+    label.style.display=show?'block':'none';
+    if(show) {
+      if(!node.geometry.boundingBox)node.geometry.computeBoundingBox();
+      const pos=node.geometry.boundingBox.getCenter(new THREE.Vector3());
+      node.localToWorld(pos);pos.project(camera);
+      label.style.transform=`translate(${(pos.x+1)*viewport.clientWidth/2}px,${(1-pos.y)*viewport.clientHeight/2}px) translate(-50%,-50%)`;
+      if(pos.z>1 || pos.z< -1)label.style.display='none';
     }
-    animate._hud = now;
+  }
+  frameCount++;
+  if (now - hudTime > 500) {
+    if (hudTime != null) {
+      $("fpsHud").textContent = `${Math.round(frameCount * 1000 / (now - hudTime))} fps`;
+    }
+    hudTime = now;
     frameCount = 0;
   }
 }
