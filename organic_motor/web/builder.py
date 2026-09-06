@@ -140,10 +140,16 @@ def checkpoint_to_glb(
     vol = apply_view(_load_volume(npz_path), view)
 
     rotor_mask = None
+    support_mask = None
+    housing_mask = None
     try:
         with np.load(npz_path, allow_pickle=False) as data:
             if "rotor_mask" in data.files:
                 rotor_mask = np.asarray(data["rotor_mask"], dtype=np.float32)
+            if "support_mask" in data.files:
+                support_mask = np.asarray(data["support_mask"], dtype=np.float32)
+            if "housing_mask" in data.files:
+                housing_mask = np.asarray(data["housing_mask"], dtype=np.float32)
     except Exception:
         pass
 
@@ -151,10 +157,32 @@ def checkpoint_to_glb(
 
     if rotor_mask is not None and "iron" in vol.materials:
         iron = vol.materials["iron"]
+        # Split iron into: rotor_iron, support_iron, housing_iron, stator_iron
+        # using the masks (each mask is 1.0 in its region, 0.0 elsewhere).
+        # Priority: rotor > support > housing > stator (residual).
         rotor_iron = (iron * rotor_mask).astype(np.float32)
-        stator_iron = (iron * (1.0 - rotor_mask)).astype(np.float32)
+        remaining = iron * (1.0 - rotor_mask)
 
-        for name, density in [("rotor_iron", rotor_iron), ("stator_iron", stator_iron)]:
+        if support_mask is not None:
+            support_iron = (remaining * support_mask).astype(np.float32)
+            remaining = remaining * (1.0 - support_mask)
+        else:
+            support_iron = np.zeros_like(remaining)
+
+        if housing_mask is not None:
+            housing_iron = (remaining * housing_mask).astype(np.float32)
+            remaining = remaining * (1.0 - housing_mask)
+        else:
+            housing_iron = np.zeros_like(remaining)
+
+        stator_iron = remaining.astype(np.float32)
+
+        for name, density in [
+            ("rotor_iron", rotor_iron),
+            ("support_iron", support_iron),
+            ("housing_iron", housing_iron),
+            ("stator_iron", stator_iron),
+        ]:
             if density.max(initial=0.0) < level:
                 continue
             from organic_motor.geometry.voxel import VoxelVolume

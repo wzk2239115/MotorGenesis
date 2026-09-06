@@ -154,6 +154,8 @@ class ModelArtifact:
     has_centerlines: bool = True
     timestamp: str = ""
     rotor_mask: np.ndarray | None = None
+    support_mask: np.ndarray | None = None  # honeycomb/support iron
+    housing_mask: np.ndarray | None = None  # outer wall iron
 
     @classmethod
     def from_motor(cls, motor, mf, cfg) -> "ModelArtifact":
@@ -279,6 +281,10 @@ class ModelArtifact:
         arrays["has_centerlines"] = np.array(self.has_centerlines)
         if self.rotor_mask is not None:
             arrays["rotor_mask"] = self.rotor_mask.astype(np.float32)
+        if self.support_mask is not None:
+            arrays["support_mask"] = self.support_mask.astype(np.float32)
+        if self.housing_mask is not None:
+            arrays["housing_mask"] = self.housing_mask.astype(np.float32)
 
         reg_arrays = _registry_to_arrays(self.centerline_registry)
         for k, v in reg_arrays.items():
@@ -358,6 +364,12 @@ class ModelArtifact:
             rotor_mask = None
             if "rotor_mask" in data.files:
                 rotor_mask = np.asarray(data["rotor_mask"], dtype=np.float32)
+            support_mask = None
+            if "support_mask" in data.files:
+                support_mask = np.asarray(data["support_mask"], dtype=np.float32)
+            housing_mask = None
+            if "housing_mask" in data.files:
+                housing_mask = np.asarray(data["housing_mask"], dtype=np.float32)
 
         shape = tuple(densities["rho_iron"].shape)
 
@@ -376,6 +388,8 @@ class ModelArtifact:
             has_centerlines=has_cl,
             timestamp=meta.get("timestamp", ""),
             rotor_mask=rotor_mask,
+            support_mask=support_mask,
+            housing_mask=housing_mask,
         )
 
     def can_energize(self) -> tuple[bool, list[str]]:

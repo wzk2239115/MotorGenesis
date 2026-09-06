@@ -126,6 +126,8 @@ function canonicalMaterial(name) {
   const n = name.toLowerCase();
   if (n.includes("rotor_iron")) return "rotor_iron";
   if (n.includes("stator_iron")) return "stator_iron";
+  if (n.includes("support_iron")) return "support_iron";
+  if (n.includes("housing_iron")) return "housing_iron";
   if (n.includes("iron")) return "iron";
   if (n.includes("copper")) return "copper";
   if (n.includes("pm")) return "pm";
@@ -138,6 +140,8 @@ const MAT_STYLE = {
   iron: { color: 0x4a5a6c, metalness: 0.92, roughness: 0.35, env: 1.2 },
   rotor_iron: { color: 0x3a4a5c, metalness: 0.92, roughness: 0.35, env: 1.2 },
   stator_iron: { color: 0x5a6a7c, metalness: 0.92, roughness: 0.35, env: 1.2 },
+  support_iron: { color: 0x6a5a3a, metalness: 0.85, roughness: 0.4, env: 1.0 },
+  housing_iron: { color: 0x4a4a5a, metalness: 0.9, roughness: 0.3, env: 1.1 },
   copper: { color: 0xe07020, metalness: 0.95, roughness: 0.25, env: 1.5 },
   pm: { color: 0xc01030, metalness: 0.4, roughness: 0.4, env: 0.8, emissive: 0x300810 },
   coolant: { color: 0x30a0e0, metalness: 0.1, roughness: 0.15, env: 1.0, opacity: 0.5 },
@@ -276,6 +280,8 @@ const MATERIAL_COLORS = {
   iron: "#4a5a6c",
   rotor_iron: "#3a4a5c",
   stator_iron: "#5a6a7c",
+  support_iron: "#6a5a3a",
+  housing_iron: "#4a4a5a",
   copper: "#e07020",
   pm: "#c01030",
   coolant: "#30a0e0",
@@ -283,12 +289,12 @@ const MATERIAL_COLORS = {
 };
 // Coolant starts HIDDEN in the solid view (it is fluid inside the coils,
 // shown as a translucent blue flow path when toggled on).
-const materialVisible = { iron: true, rotor_iron: true, stator_iron: true, copper: true, pm: true, coolant: false, insulator: true };
+const materialVisible = { iron: true, rotor_iron: true, stator_iron: true, support_iron: true, housing_iron: true, copper: true, pm: true, coolant: false, insulator: true };
 
 function syncMaterialToggles() {
   const host = $("materialToggles");
   host.innerHTML = "";
-  for (const mat of ["rotor_iron", "stator_iron", "iron", "copper", "pm", "insulator", "coolant"]) {
+  for (const mat of ["rotor_iron", "stator_iron", "support_iron", "housing_iron", "iron", "copper", "pm", "insulator", "coolant"]) {
     const meshes = materialNodes.get(mat) || [];
     const present = meshes.length > 0;
     const row = document.createElement("label");
@@ -309,6 +315,7 @@ function syncMaterialToggles() {
 function labelOf(m) {
   return {
     iron: "铁 Iron", rotor_iron: "转子铁 Rotor", stator_iron: "定子铁 Stator",
+    support_iron: "蜂窝 Support", housing_iron: "外壳 Housing",
     copper: "铜 Copper", pm: "磁钢 PM",
     coolant: "冷却 Coolant", insulator: "绝缘 Insulator",
   }[m] || m;

@@ -123,10 +123,12 @@ def build_motor_with_assembly(cfg: MotorConfig3D | None = None) -> tuple:
     return mf, cfg
 
 
-def export_checkpoint(mf, cfg, out_dir: Path, motor=None):
+def export_checkpoint(mf, cfg, out_dir: Path, motor=None,
+                      support_mask=None, housing_mask=None):
     """Save MaterialField as versioned ModelArtifact for web viewer + simulation.
 
     If motor is provided, saves magnetization and motion groups too.
+    If support_mask/housing_mask are provided, saves them for GLB splitting.
     """
     from organic_motor.construct.model_artifact import ModelArtifact
 
@@ -134,6 +136,11 @@ def export_checkpoint(mf, cfg, out_dir: Path, motor=None):
         artifact = ModelArtifact.from_motor(motor, mf, cfg)
     else:
         artifact = ModelArtifact.from_material_field(mf, cfg)
+
+    if support_mask is not None:
+        artifact.support_mask = support_mask
+    if housing_mask is not None:
+        artifact.housing_mask = housing_mask
 
     npz_path = artifact.save(out_dir)
     print(f"  Artifact saved: {npz_path}")
@@ -443,9 +450,63 @@ if __name__ == "__main__":
         from organic_motor.construct.objects import field_driven_motor
         motor = field_driven_motor(cfg)
         mf = motor.build()
+
+        # Add honeycomb + wall + cooling (same as build_assembly but on motor)
+        cx, cy, cz = cfg.center
+        r_winding_outer = cfg.R_winding_outer
+        r_design = cfg.R_design
+        z_half = cfg.stator_half_length
+        r_support_inner = r_winding_outer + 0.001
+        r_support_outer = r_design - 0.001
+        r_wall_inner = r_design
+        r_wall_outer = r_design + 0.002
+
+        honeycomb = HoneycombGenerator(
+            r_inner=r_support_inner, r_outer=r_support_outer,
+            z_bottom=-z_half, z_top=z_half,
+            cell_size=0.004, wall_thickness=0.0008,
+        ).build(cfg)
+        mf.add(honeycomb, "iron", priority=False)
+
+        X, Y, Z = meshgrid3d(cfg)
+        R = np.sqrt((X - cx)**2 + (Y - cy)**2)
+        wall_inner_sdf = np.maximum(r_wall_inner - R, R - r_wall_outer)
+        wall_z = np.abs(Z - cz) - (z_half + 0.002)
+        wall = np.maximum(wall_inner_sdf, wall_z)
+        wall_field = SDFVoxelField(wall.astype(np.float32), cfg.spacing, cfg.origin)
+        mf.add(wall_field, "iron", priority=True)
+
+        helix = HelicalChannelGenerator(
+            radius=(r_support_inner + r_support_outer) / 2,
+            pitch=2 * z_half / 4.0, n_turns=4.0,
+            channel_radius=0.0015, z_start=-z_half + 0.002,
+            handedness=1, n_segments=200,
+        ).build(cfg)
+        coolant_sdf = helix.sdf
+        coolant_field = SDFVoxelField(
+            coolant_sdf.astype(np.float32), cfg.spacing, cfg.origin)
+        mf.add(coolant_field, "coolant", priority=True)
+
+        # Masks for GLB splitting
+        support_mask = (honeycomb.sdf < 0).astype(np.float32)
+        housing_mask = (wall < 0).astype(np.float32)
+
+        # End caps with bearing seats, bolt holes, wire exit
+        from organic_motor.construct.assembly_features import EndCapGenerator
+        end_cap = EndCapGenerator(
+            flange_outer_radius=r_wall_outer + 0.002,
+            bolt_circle_radius=r_design - 0.008,
+        ).build(cfg)
+        mf.add(end_cap, "iron", priority=True)
+        endcap_mask = (end_cap.sdf < 0).astype(np.float32)
+
         out_dir = Path(__file__).parent.parent / "out" / "assembly"
-        export_checkpoint(mf, cfg, out_dir, motor=motor)
+        export_checkpoint(mf, cfg, out_dir, motor=motor,
+                          support_mask=support_mask, housing_mask=housing_mask)
         print(f"\n  Materials: {mf.materials_present()}")
+        print(f"  Support voxels: {int(support_mask.sum())}")
+        print(f"  Housing voxels: {int(housing_mask.sum())}")
+        print(f"  End-cap voxels: {int(endcap_mask.sum())}")
         print("  DONE — open web viewer and select 'assembly' run")
     else:
         print("=== ASSEMBLY DEMO (support only) ===")
