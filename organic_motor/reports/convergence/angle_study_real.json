@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-09-06T15:35:05",
+  "model": "real 96^3 assembly artifact (design 6056e6cc), solver_fields path",
+  "sample_rel_change_max": 0.0,
+  "sample_rel_change_mean": 0.0,
+  "fundamental_amplitude_Nm": {
+    "na6": [
+      0.0451027811604676,
+      0.04514960502681822,
+      0.04751427496505654
+    ],
+    "na12": [
+      0.04500271274011984,
+      0.0450173211041988,
+      0.047576690772718484
+    ]
+  },
+  "fundamental_rel_change": [
+    0.0022186751631065255,
+    0.002929902100823264,
+    0.0013136222263277707
+  ],
+  "wall_s": {
+    "6": 2909.2388846874237,
+    "12": 607.0209009647369
+  },
+  "note": "T1 sampled at shared angles compares the discretisation; fundamental amplitudes compare the physical content."
+}
