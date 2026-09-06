@@ -122,6 +122,34 @@ class TestCrossTerms:
         d = run_powered_transient(maps, s, cfg, 0.0)
         assert np.all(np.isfinite(d["transient_torque_Nm"]))
 
+    def test_analytical_copper_matches_circuit(self, cfg):
+        """When q_joule_ph is present, voxel copper must match circuit I²R.
+
+        The analytical heat map deposits I²ρL/A along the centerline,
+        which is grid-independent.  The transient scales it by i_norm².
+        At i_norm=1 (rated current), the voxel total must equal
+        nominal²·R = circuit copper.
+        """
+        maps = _synthetic_maps(cfg)
+        s = _base_settings(control_mode="current_control", i_q_ref_A=10.0,
+                           load_torque=0.0, load_viscous=0.0, steps=500)
+        # Inject a uniform analytical heat map: ∫q dV = nominal²·R
+        nom = np.asarray(maps["nominal_current"])
+        R = s.phase_resistance
+        cell_vol = cfg.cell_volume
+        n_cells = float(np.prod(cfg.shape))
+        q_joule_ph = np.zeros((3,) + cfg.shape, dtype=np.float32)
+        for p in range(3):
+            q_joule_ph[p] = float(nom[p] ** 2 * R) / (cell_vol * n_cells)
+        maps["q_joule_ph"] = np.asarray(q_joule_ph, dtype=np.float32)
+        d = run_powered_transient(maps, s, cfg, 0.0)
+        led = ledger(d, s)
+        ratio = led.get("copper_two_path_ratio")
+        assert ratio is not None, "copper_two_path_ratio is None"
+        assert abs(ratio - 1.0) < 0.02, (
+            f"analytical copper ratio should be ~1.0, got {ratio:.4f}"
+        )
+
 
 class TestAngleRefinement:
     def test_map_angle_doubling_quantified(self, cfg):

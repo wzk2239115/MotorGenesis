@@ -169,6 +169,7 @@ def run_artifact_audit(artifact_dir: str | Path, steps: int = 4000):
         include_mechanics=False,
         n_turns_override=n_turns_override,
         filter_harmonics=True,
+        centerline_registry=registry,
     )
 
     psi_map = float(maps.get("psi_from_map", 0.0))

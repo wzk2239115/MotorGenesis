@@ -589,6 +589,7 @@ def _run_simulation_thread(
                     progress=progress_cb,
                     n_turns_override=n_turns_override,
                     filter_harmonics=True,
+                    centerline_registry=registry,
                 )
             _MAPS_CACHE[cache_key] = {
                 k: v for k, v in maps.items() if k != "_scan"

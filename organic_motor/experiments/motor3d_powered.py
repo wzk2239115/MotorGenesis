@@ -322,6 +322,7 @@ def compute_powered_maps(
     include_cross_terms: bool = False,
     n_turns_override: int | None = None,
     filter_harmonics: bool = False,
+    centerline_registry: list | None = None,
 ) -> dict:
     """Full torque decomposition T0/T1/T2 via sign- and zero-current solves.
 
@@ -573,6 +574,25 @@ def compute_powered_maps(
         "nominal_current": jnp.asarray(nominal),
         "_settings_for_scan": settings,
     }
+
+    # --- Analytical copper-loss heat map (grid-independent).
+    # The transient solver deposits copper heat as I²ρL/A along the
+    # centerline, NOT as |J_grid|²/σ which is grid-dependent and
+    # underestimates by ~7x on a 96³ grid (tent kernel footprint vs
+    # wire cross-section).  q_joule_ph[p] is the volumetric heat
+    # density [W/m³] when phase p alone carries I_per_turn; the
+    # transient scales it by i_norm[p]² (loss ∝ I²).
+    if centerline_registry is not None and keep_volumes:
+        from organic_motor.optimization.line_current import _deposit_joule_heat
+        I_per_turn = float(cfg.current_density_peak
+                           * centerline_registry[0]["cross_section_area"])
+        q_joule_ph = np.zeros((3,) + cfg.shape, dtype=np.float32)
+        for p in range(3):
+            amp = np.zeros(3)
+            amp[p] = 1.0
+            q_joule_ph[p] = _deposit_joule_heat(
+                cfg, centerline_registry, I_per_turn, amp)
+        maps["q_joule_ph"] = jnp.asarray(q_joule_ph)
     return maps
 
 
@@ -633,6 +653,10 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     copper_fraction = jnp.asarray(materials["fractions"][2], dtype=jnp.float32)
     iron_fraction = jnp.asarray(materials["fractions"][1], dtype=jnp.float32)
     sigma = jnp.asarray(cfg.sigma_copper * jnp.maximum(copper_fraction, 1.0e-6), dtype=jnp.float32)
+    # Analytical copper heat map (grid-independent I²ρL/A deposited along
+    # centerline).  When present, the transient uses this instead of
+    # |J_grid|²/σ which is grid-dependent and underestimates by ~7x.
+    q_joule_ph = jnp.asarray(maps.get("q_joule_ph")) if maps.get("q_joule_ph") is not None else None
     k_thermal = jnp.asarray(materials["thermal_conductivity"], dtype=jnp.float32)
     c_vol = jnp.asarray(materials["volumetric_heat_capacity"], dtype=jnp.float32)
     cooling_mask = jnp.asarray(masks["boundary"], dtype=jnp.float32)
@@ -934,7 +958,15 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             _interp_uniform(j_maps_ph[q], angle, period) for q in range(3)
         ]) * i_norm[:, None, None, None, None], axis=0)
         mapped_b = _interp_uniform(b_map, angle, period)
-        q_joule = transient_joule_loss(mapped_j, sigma, active_mask=copper_fraction)
+        # Copper joule loss: use the ANALYTICAL heat map (I²ρL/A, grid-
+        # independent) when available; fall back to grid J²/σ otherwise.
+        if q_joule_ph is not None:
+            q_joule = jnp.sum(
+                jnp.stack([q_joule_ph[q] * i_norm[q] ** 2 for q in range(3)]),
+                axis=0,
+            )
+        else:
+            q_joule = transient_joule_loss(mapped_j, sigma, active_mask=copper_fraction)
         db_dt = (mapped_b - prev_b) / dt
         frequency = p * omega / (2.0 * jnp.pi)
         q_iron = transient_iron_loss(

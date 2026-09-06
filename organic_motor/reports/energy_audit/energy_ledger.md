@@ -1,4 +1,4 @@
-# Energy Audit (git dc0345e)
+# Energy Audit (git 00ce79b)
 
 ## Synthetic Model
 
@@ -19,6 +19,6 @@
 
 | 场景 | 电路误差 | 转子误差 | E_elec | E_conv | W_load | 末速 |
 |---|---|---|---|---|---|---|
-| no_load | 3.19% | 0.00% | 590.41 mJ | 4.30 mJ | 0.10 mJ | 6.5 rad/s |
-| load_step | 1.53% | 0.00% | 577.60 mJ | 1.53 mJ | 0.86 mJ | 2.6 rad/s |
+| no_load | 3.19% | 0.00% | 590.42 mJ | 4.30 mJ | 0.10 mJ | 6.5 rad/s |
+| load_step | 1.53% | 0.00% | 577.61 mJ | 1.53 mJ | 0.86 mJ | 2.6 rad/s |
 | power_off | 3.43% | 0.00% | 364.02 mJ | 0.91 mJ | 0.05 mJ | 2.9 rad/s |
