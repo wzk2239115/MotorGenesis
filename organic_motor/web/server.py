@@ -412,8 +412,38 @@ def _run_simulation_thread(
 
         maps["temperature_init"] = jnp.full(cfg.shape, float(cfg.ambient_temperature), dtype=jnp.float32)
 
+        # --- map physical-bounds gate: reject unphysical maps rather
+        # than letting them produce energy from nothing ---
+        t_phys = 1.5 * cfg.pole_pairs * electrical.flux_linkage * \
+            float(np.max(np.abs(np.asarray(maps["nominal_current"]))))
+        t_bound = 2.5 * t_phys
+        t1_max = float(np.max(np.abs(np.asarray(maps["torques_ph"]))))
+        t2_max = float(np.max(np.abs(np.asarray(maps["torque_i2_diag"]))))
+        t0_max = float(np.max(np.abs(np.asarray(maps["torque_cogging"]))))
+        if max(t1_max, t2_max) > t_bound:
+            sim["status"] = "rejected"
+            sim["error"] = (
+                f"torque maps exceed physical bound: T1_max={t1_max:.2f}, "
+                f"T2_max={t2_max:.2f} Nm vs bound {t_bound:.2f} "
+                f"(1.5*p*psi*I_nom={t_phys:.2f} x2.5) — refine the grid "
+                "or increase map angles before trusting this transient"
+            )
+            return
+
         sim["status"] = "running_transient"
         data = run_powered_transient(maps, p_settings, cfg, initial_angle)
+
+        # --- energy-balance validity check (audit: 失败如实报告) ---
+        dt = p_settings.dt
+        i_hist = np.asarray(data["currents_A"])[1:]
+        e_elec = float(np.sum(data["electrical_power_W"])) * dt
+        e_joule = float(np.sum(np.sum(i_hist ** 2, axis=1)
+                               * p_settings.phase_resistance)) * dt
+        e_mech = float(np.sum(data["mechanical_power_W"])) * dt
+        mag = 0.5 * p_settings.phase_inductance * float(
+            np.sum(i_hist[-1] ** 2))
+        imbalance = abs(e_mech + e_joule + mag - e_elec) / max(
+            abs(e_elec), abs(e_joule), 1e-9)
 
         sim["status"] = "done"
         sim["results"] = {
@@ -428,6 +458,13 @@ def _run_simulation_thread(
             "mechanical_power_W": data["mechanical_power_W"].tolist(),
             "max_temperature_C": data["max_temperature_C"].tolist(),
             "rpm": (data["angular_velocity_rad_s"] * 60 / (2 * np.pi)).tolist(),
+            "energy_elec_J": e_elec,
+            "energy_mech_J": e_mech,
+            "energy_joule_J": e_joule,
+            "energy_imbalance_rel": imbalance,
+            "energy_valid": bool(imbalance < 0.2),
+            "map_bounds": {"T1_max": t1_max, "T2_max": t2_max,
+                           "T0_max": t0_max, "bound": t_bound},
         }
         sim["settings"] = {
             "voltage": voltage,

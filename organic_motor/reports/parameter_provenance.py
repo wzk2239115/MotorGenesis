@@ -71,8 +71,13 @@ PROVENANCE: tuple[ParameterProvenance, ...] = (
         "zero/plus/minus current solves per angle on the realized fields "
         "(compute_powered_maps)",
         "reference-coil Biot-Savart battery for the underlying solver; "
-        "map phase convention cross-checked vs back-EMF (cos axis)",
-        "estimate",
+        "map phase convention cross-checked vs back-EMF (cos axis); "
+        "QUALITY GATE active: at 96^3 the real-motor maps exceed the "
+        "physical bound (T1 up to 4935 Nm vs 1.5*p*psi*I_nom*x2.5 = 147) "
+        "at specific (phase, angle) alignments — phase-1 current at map "
+        "angles 2/3/6-of-6 — magnetostatic solve failures; transient "
+        "REFUSED until maps are fixed (finer grid / more iterations)",
+        "unverified (gate active)",
     ),
     ParameterProvenance(
         "back-EMF", "sinusoidal phase EMF", "V",

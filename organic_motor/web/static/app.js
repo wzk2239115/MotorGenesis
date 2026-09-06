@@ -618,7 +618,12 @@ function pollSimulation() {
       simState.status = data.status;
       if (data.status === "done" && data.results) {
         simState.results = data.results;
-        $("simStatus").textContent = `完成 · ${data.results.time_s.length} 步 · 末速 ${(data.results.rpm[data.results.rpm.length-1]).toFixed(0)} rpm`;
+        const r = data.results;
+        const energyNote = r.energy_valid === false
+          ? ` · ⚠ 能量失衡 ${(r.energy_imbalance_rel * 100).toFixed(0)}% (结果不可信)`
+          : "";
+        $("simStatus").textContent =
+          `完成 · ${r.time_s.length} 步 · 末速 ${(r.rpm[r.rpm.length - 1]).toFixed(0)} rpm${energyNote}`;
         $("simRunBtn").disabled = false;
         $("simPlayBtn").disabled = false;
         $("simResetBtn").disabled = false;

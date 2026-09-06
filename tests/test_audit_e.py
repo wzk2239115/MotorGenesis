@@ -84,13 +84,14 @@ class TestReferenceAdapter:
 class TestParameterProvenance:
     def test_every_entry_has_confidence(self):
         for p in PROVENANCE:
-            assert p.confidence in ("verified", "estimate", "unverified")
+            assert p.confidence.split(" ")[0] in (
+                "verified", "estimate", "unverified")
             assert p.source and p.method
 
     def test_counts_consistent(self):
         counts = confidence_counts()
-        assert counts["verified"] + counts["estimate"] + \
-            counts["unverified"] == len(PROVENANCE)
+        total = sum(counts.values())
+        assert total == len(PROVENANCE)
         assert counts["unverified"] >= 2  # L_phase, J_rotor, iron-loss k
 
     def test_markdown_renders(self):
