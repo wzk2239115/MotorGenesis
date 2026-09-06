@@ -320,6 +320,8 @@ def compute_powered_maps(
     phases: Sequence[int] = (0, 1, 2),
     progress=None,
     include_cross_terms: bool = False,
+    n_turns_override: int | None = None,
+    filter_harmonics: bool = False,
 ) -> dict:
     """Full torque decomposition T0/T1/T2 via sign- and zero-current solves.
 
@@ -434,8 +436,14 @@ def compute_powered_maps(
         # per ampere (measured: motor crawled at 0.06 rad/s from standstill).
         if getattr(cfg, "winding_style", "printed") == "printed":
             n_series = _printed_series_coils(cfg)
-            # P5: multiply by turns per cell (7 bands = 7 turns in series)
-            n_series *= max(1, getattr(cfg, "_n_turns_per_cell", 1))
+            # P5: multiply by turns per cell — n_turns_override (from the
+            # centerline registry, typically 7) replaces the cfg attribute
+            # which defaults to 1.  Without this the nominal current is 7x
+            # too large, i_norm 7x too small, and the torque per terminal
+            # amp is 7x deflated.
+            n_turns_per_cell = (n_turns_override if n_turns_override is not None
+                                else max(1, getattr(cfg, "_n_turns_per_cell", 1)))
+            n_series *= max(1, n_turns_per_cell)
             nominal[p] /= max(1, n_series)
 
     t2_diag = t_static - t0_map[None, :]  # (3, na) self I^2 coefficients
@@ -471,6 +479,47 @@ def compute_powered_maps(
 
     period = 2.0 * np.pi / cfg.pole_pairs
     map_angles = np.mod(np.asarray(angles, dtype=float), period)
+
+    # --- Derive psi from the torque map (audit item 6: emf/torque
+    # consistency).  The FEA ∮A·dl flux linkage includes END-TURN
+    # LEAKAGE that doesn't produce air-gap torque; the map-derived psi
+    # captures only the torque-producing (mutual) component and is
+    # CONSISTENT with the maps by construction.  Using this psi for the
+    # back-EMF makes ∫emf*i == ∫T*omega (energy balance).
+    elec_angles = cfg.pole_pairs * map_angles
+    psi_map_amps = []
+    for p in range(3):
+        a = 2.0 / na * np.sum(t_lin[p] * np.cos(elec_angles))
+        b = 2.0 / na * np.sum(t_lin[p] * np.sin(elec_angles))
+        psi_map_amps.append(float(np.sqrt(a * a + b * b)))
+    i_nom_mean = float(np.mean(np.abs(nominal)))
+    psi_from_map = float(np.mean(psi_map_amps)) / max(
+        1.5 * cfg.pole_pairs * i_nom_mean, 1e-12)
+
+    # --- Harmonic filter: keep only the FUNDAMENTAL (1st electrical
+    # harmonic) of T0 and T1, zeroing all higher harmonics.  The
+    # reduced-order model's back-EMF is purely sinusoidal (1st
+    # harmonic); without this filter the map's slot/discretisation
+    # harmonics contribute to torque but have NO corresponding emf,
+    # breaking the energy balance by 15-25% on a 96^3 grid.
+    # The filter makes ∫emf*i == ∫T*omega (audit item 6).
+    if filter_harmonics and na >= 4:
+        elec_ang = cfg.pole_pairs * map_angles
+        cos_e = np.cos(elec_ang)
+        sin_e = np.sin(elec_ang)
+        for p in range(3):
+            a = 2.0 / na * np.sum(t_lin[p] * cos_e)
+            b = 2.0 / na * np.sum(t_lin[p] * sin_e)
+            t_lin[p] = a * cos_e + b * sin_e  # fundamental only
+        a0 = 2.0 / na * np.sum(t0_map * cos_e)
+        b0 = 2.0 / na * np.sum(t0_map * sin_e)
+        t0_map = a0 * cos_e + b0 * sin_e
+        # T2 (reluctance) kept as-is: it's a 2nd-harmonic effect that
+        # doesn't couple to the emf model anyway; its magnitude is ~0.
+        # Store the raw maps for diagnostics.
+    maps_raw_t1 = t_lin.copy()
+    maps_raw_t0 = t0_map.copy()
+
     materials = material_fields3d(last_result, cfg)
     masks = domain_masks3d(cfg)
     mechanics = None
@@ -499,6 +548,8 @@ def compute_powered_maps(
         "torque_cogging": t0_map,       # T0: zero-current PM-only torque
         "torque_i2_diag": t2_diag,      # T2_pp: per-phase self I^2 torque
         "torque_i2_cross": t2_cross,    # T2_pq: pair cross terms (or None)
+        "psi_from_map": psi_from_map,    # torque-consistent flux linkage [Wb]
+        "psi_map_per_phase": psi_map_amps,  # per-phase T1 fundamental [Nm]
         "j_maps_ph": jnp.asarray(j_maps_ph) if keep_volumes else None,
         "b_map": jnp.asarray(b_map) if keep_volumes else None,
         "temperature_map": temperature_map,

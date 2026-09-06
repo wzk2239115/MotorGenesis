@@ -518,6 +518,10 @@ def _run_simulation_thread(
             _persist_sim(run_dir, sim)
             return
 
+        # Initial p_settings — psi from FEA (used only for the map solve;
+        # the map solve does NOT depend on psi, only on geometry + unit
+        # excitation).  After maps are computed, psi is overridden with
+        # the map-consistent value (audit item 6: emf/torque consistency).
         p_settings = Powered3DSettings(
             phase_voltage_peak=voltage,
             phase_resistance=electrical.phase_resistance,
@@ -535,6 +539,12 @@ def _run_simulation_thread(
             rotor_inertia=rotor_inertia,
             include_windage=include_windage,
         )
+
+        # n_turns from the centerline registry (7 bands per cell) —
+        # fixes the nominal-current normalization (was 7x too large).
+        n_turns_override = None
+        if registry:
+            n_turns_override = int(registry[0].get("n_turns", 1))
 
         n_map_angles = 6
         cache_key = (artifact.design_hash, n_map_angles)
@@ -576,6 +586,8 @@ def _run_simulation_thread(
                     phase_solver=phase_solver,
                     include_mechanics=False,
                     progress=progress_cb,
+                    n_turns_override=n_turns_override,
+                    filter_harmonics=True,
                 )
             _MAPS_CACHE[cache_key] = {
                 k: v for k, v in maps.items() if k != "_scan"
@@ -584,6 +596,23 @@ def _run_simulation_thread(
                 _MAPS_CACHE.pop(next(iter(_MAPS_CACHE)))
 
         maps["temperature_init"] = jnp.full(cfg.shape, float(cfg.ambient_temperature), dtype=jnp.float32)
+
+        # --- psi consistency: override the FEA flux linkage with the
+        # MAP-DERIVED value (audit item 6).  The FEA ∮A·dl includes
+        # end-turn leakage that doesn't produce torque; the map-derived
+        # psi captures only the torque-producing (mutual) component and
+        # is consistent with the torque maps BY CONSTRUCTION, so
+        # ∫emf*i == ∫T*omega (energy balance).  psi_FEA is retained as
+        # a diagnostic (their ratio = 1/mutual_fraction). ---
+        psi_fea = electrical.flux_linkage
+        psi_map = float(maps.get("psi_from_map", 0.0))
+        if psi_map > 1e-8:
+            from dataclasses import replace as _replace
+            p_settings = _replace(p_settings, flux_linkage=psi_map)
+            maps.pop("_scan", None)  # force recompile with new psi
+            sim["psi_fea_Wb"] = psi_fea
+            sim["psi_map_Wb"] = psi_map
+            sim["leakage_fraction"] = 1.0 - psi_map / max(psi_fea, 1e-12)
 
         # --- map physical-bounds gate: reject unphysical maps rather
         # than letting them produce energy from nothing ---
@@ -656,7 +685,12 @@ def _run_simulation_thread(
             "include_windage": include_windage,
             "phase_resistance": electrical.phase_resistance,
             "phase_inductance": electrical.phase_inductance,
-            "flux_linkage": electrical.flux_linkage,
+            "flux_linkage": p_settings.flux_linkage,
+            "flux_linkage_source": ("psi_from_map (torque-consistent)"
+                                     if psi_map > 1e-8 else "psi_fea"),
+            "psi_fea_Wb": psi_fea,
+            "leakage_fraction": 1.0 - psi_map / max(psi_fea, 1e-12)
+            if psi_fea > 1e-12 else None,
         }
         _persist_sim(run_dir, sim)
     except _Cancelled:

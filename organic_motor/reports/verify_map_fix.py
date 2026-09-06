@@ -55,6 +55,8 @@ def main():
         control_mode="current_control", i_q_ref_A=10.0,
     )
     import sys
+    n_turns_override = int(registry[0].get("n_turns", 1)) if registry else None
+    print(f"[verify] n_turns_override = {n_turns_override}", flush=True)
     n_map_angles = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     elec_period = 2.0 * np.pi / cfg.pole_pairs
     angles_map = np.linspace(0, elec_period, n_map_angles, endpoint=False)
@@ -72,27 +74,28 @@ def main():
     maps = compute_powered_maps(
         cfg, logits, None, mag, angles_map, p_settings,
         phase_solver=phase_solver, include_mechanics=False,
-        progress=progress,
+        progress=progress, n_turns_override=n_turns_override,
     )
-    np.save(f"/tmp/opencode/t1_map_na{n_map_angles}.npy",
-            np.asarray(maps["torques_ph"]))
     t1_max = float(np.max(np.abs(np.asarray(maps["torques_ph"]))))
     t2_max = float(np.max(np.abs(np.asarray(maps["torque_i2_diag"]))))
     t0_max = float(np.max(np.abs(np.asarray(maps["torque_cogging"]))))
     i_nom = float(np.max(np.abs(np.asarray(maps["nominal_current"]))))
-    t_phys = 1.5 * cfg.pole_pairs * flux * i_nom
-    bound = 2.5 * t_phys
+    psi_map = float(maps.get("psi_from_map", 0.0))
+    psi_fea = electrical.flux_linkage
+    bound = 2.5 * 1.5 * cfg.pole_pairs * psi_fea * i_nom
     print(f"\n[verify] maps done in {time.time()-t1:.0f}s")
-    print(f"[verify] T1_max={t1_max:.3f}  T2_max={t2_max:.3f}  "
-          f"T0_max={t0_max:.3f}  I_nom={i_nom:.3f} A")
-    print(f"[verify] physical bound 1.5*p*psi*I_nom*2.5 = {bound:.3f}")
+    print(f"[verify] T1_max={t1_max:.4f}  T2_max={t2_max:.6f}  "
+          f"T0_max={t0_max:.4f}  I_nom={i_nom:.3f} A")
+    print(f"[verify] psi_FEA={psi_fea:.6f} Wb  psi_map={psi_map:.6f} Wb")
+    print(f"[verify] psi_FEA/psi_map = {psi_fea/max(psi_map,1e-12):.1f}  "
+          f"(leakage fraction = {1-psi_map/max(psi_fea,1e-12):.1%})")
+    print(f"[verify] physical bound (FEA) = {bound:.3f}")
     verdict = "PASS — below gate" if max(t1_max, t2_max) <= bound else \
         "FAIL — still above gate"
     print(f"[verify] gate: {verdict}")
-    # per-phase detail
     for p in range(3):
         t1p = np.asarray(maps["torques_ph"])[p]
-        print(f"  phase {p}: T1 range [{t1p.min():+.3f}, {t1p.max():+.3f}] "
+        print(f"  phase {p}: T1 range [{t1p.min():+.4f}, {t1p.max():+.4f}] "
               f"mean {t1p.mean():+.4f}")
 
 
