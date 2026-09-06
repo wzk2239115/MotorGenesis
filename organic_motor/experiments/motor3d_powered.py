@@ -88,6 +88,20 @@ class Powered3DSettings:
     # --- over-EMF protection: open the contactor after this many
     # consecutive steps of total-voltage saturation (0 = disabled) ---
     overemf_trip_steps: int = 500
+    # --- D7: coupled thermal boundaries (audit item 7) ---
+    # "flat": legacy single sink to ambient via cooling_coefficient.
+    # "coupled": air-gap surface <-> TRACKED gap-air node <-> end faces
+    # <-> ambient; channel wall <-> TRACKED coolant node with through
+    # flow m_dot*cp (JAX Darcy fixed point, refreshed every
+    # flow_update_steps).  Solid-side heat integrals and fluid-side
+    # enthalpy are both returned for the energy audit.
+    thermal_coupling: str = "flat"
+    flow_update_steps: int = 200
+    pump_dp_Pa: float = 5.0e4
+    channel_length_m: float = 0.85
+    channel_diameter_m: float = 0.003
+    gap_air_heat_capacity_J_K: float = 1.5  # small trapped-air node
+    coolant_inlet_temp_C: float = 40.0
     # --- D2: aerodynamic rotor load (windage) ---
     include_windage: bool = False
     windage_rotor_radius_m: float | None = None  # default R_sleeve_outer
@@ -577,6 +591,78 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     cool = settings.cooling_coefficient
     spacing = cfg.spacing
 
+    # --- D7: coupled thermal boundary geometry (audit item 7) ---
+    thermal_coupling = settings.thermal_coupling
+    if thermal_coupling not in ("flat", "coupled"):
+        raise ValueError(f"unknown thermal_coupling {thermal_coupling!r}")
+    if thermal_coupling == "coupled":
+        # Air-gap surface mask: solid voxels within 2 cells of the gap.
+        _X, _Y, _Z = meshgrid3d(cfg)
+        _cx, _cy, _cz = cfg.center
+        _r = np.sqrt((_X - _cx) ** 2 + (_Y - _cy) ** 2)
+        r_in = float(getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer))
+        r_out = float(cfg.R_stator_inner)
+        band = 2.0 * float(min(spacing))
+        gap_mask_np = (
+            (np.asarray(materials["fractions"][1]) > 0.1)
+            & (_r > r_in - band) & (_r < r_out + band)
+        ).astype(np.float32)
+        # Channel wall mask: from the artifact coolant density if the
+        # caller injected it (maps["masks"]["coolant"]), else empty.
+        cool_np = np.asarray(masks.get("coolant", 0.0), dtype=np.float32)
+        if cool_np.shape != cfg.shape:
+            cool_np = np.zeros(cfg.shape, dtype=np.float32)
+        dil = cool_np.copy()
+        for ax in range(3):
+            dil = np.maximum(dil, np.roll(cool_np, 1, ax))
+            dil = np.maximum(dil, np.roll(cool_np, -1, ax))
+        channel_mask_np = (
+            (dil > 0.5) & (cool_np < 0.5)
+            & (np.asarray(materials["fractions"][1]) > 0.1)
+        ).astype(np.float32)
+        gap_mask = jnp.asarray(gap_mask_np)
+        channel_mask = jnp.asarray(channel_mask_np)
+        gap_cell_count = max(float(gap_mask_np.sum()), 1.0)
+        ch_cell_count = max(float(channel_mask_np.sum()), 1.0)
+        r_gap = 0.5 * (r_in + r_out)
+        gap_width = max(r_out - r_in, 1e-4)
+        C_gap = float(settings.gap_air_heat_capacity_J_K)
+        T_cool_in = float(settings.coolant_inlet_temp_C)
+        flow_every = max(1, int(settings.flow_update_steps))
+        L_ch = float(settings.channel_length_m)
+        D_ch = float(settings.channel_diameter_m)
+        pump_dp = float(settings.pump_dp_Pa)
+        # water props (flow1d)
+        rho_w, mu_w, cp_w, k_w = 992.0, 6.53e-4, 4179.0, 0.631
+        A_ch = math.pi * D_ch ** 2 / 4.0
+        pr_w = mu_w * cp_w / k_w
+
+        def _h_gap_jnp(w):
+            # Same math as physics.airgap.air_gap_convection (Nu =
+            # max(1, 0.2*Ta^0.25), Ta = Re^2 * delta/r), inline for JAX.
+            nu_air = 1.91e-5 / 1.127
+            re = jnp.abs(w) * r_gap * gap_width / nu_air
+            ta = re ** 2 * (gap_width / r_gap)
+            nu_num = jnp.maximum(1.0, 0.2 * ta ** 0.25)
+            return nu_num * 0.0276 / gap_width
+
+        def _m_dot_jnp():
+            # Darcy-Weisbach fixed point on the coolant branch (JAX,
+            # traceable): dp = (f*L/D) rho v^2/2, f = Blasius/64-Re.
+            v = jnp.asarray(0.5)
+            for _ in range(8):
+                re = rho_w * v * D_ch / mu_w
+                f = jnp.where(re < 2300.0, 64.0 / jnp.maximum(re, 1.0),
+                              0.316 * jnp.maximum(re, 1.0) ** -0.25)
+                v = jnp.sqrt(2.0 * pump_dp * D_ch / (f * L_ch * rho_w))
+            return rho_w * A_ch * v
+
+        def _h_channel_jnp(m_dot):
+            re = jnp.abs(m_dot) * D_ch / (A_ch * mu_w)
+            nu = jnp.where(re < 2300.0, 3.66,
+                           0.023 * jnp.maximum(re, 1.0) ** 0.8 * pr_w ** 0.4)
+            return nu * k_w / D_ch
+
     # --- D4: explicit-Euler thermal stability limit ---
     # 3-D diffusion: dt < dx^2 / (2*ndim*alpha_max), alpha = k / (rho*cp).
     k_np = np.asarray(materials["thermal_conductivity"], dtype=np.float64)
@@ -653,7 +739,7 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
 
     def step(carry, idx):
         (angle, omega, currents, temperature, prev_b, v_d_int, v_q_int,
-         trip_cnt) = carry
+         trip_cnt, t_gap, t_cool, m_dot, h_ch, q_fl_acc) = carry
         t = idx * dt
         elec = p * angle + comm
         # Physical power disconnection (B6): voltage zero after cutoff.
@@ -791,14 +877,67 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
         q_iron = transient_iron_loss(
             mapped_b, db_dt, k_hyst, k_eddy, frequency, iron_mask=iron_fraction
         )
-        temperature = jnp.asarray(
-            advance_voxel_temperature(
-                temperature, q_joule + q_iron, k_thermal, c_vol, spacing, dt,
-                ambient_temperature=ambient, cooling_coefficient=cool,
-                cooling_mask=cooling_mask,
-            ),
-            dtype=jnp.float32,
-        )
+        if thermal_coupling == "coupled":
+            # Boundary-specific sinks (audit 7): the gap surface talks to
+            # the TRACKED gap-air node (not straight to ambient), and the
+            # channel wall talks to the TRACKED coolant node.  h is a
+            # SURFACE coefficient; per-voxel exchange area ~ dx^2 and the
+            # volumetric sink coefficient is h*dx^2/cell_volume = h/dx.
+            h_gap_t = _h_gap_jnp(omega)
+            refresh = (idx % flow_every) == 0
+            m_dot_new = jnp.where(refresh, _m_dot_jnp(), m_dot)
+            h_ch_new = jnp.where(refresh, _h_channel_jnp(m_dot_new), h_ch)
+            dx_face = float(min(spacing)) ** 2
+            segments = [
+                (gap_mask, h_gap_t / dx_min, t_gap),
+                (channel_mask, h_ch_new / dx_min, t_cool),
+            ]
+            q_gap_sink = jnp.sum(h_gap_t * gap_mask * (temperature - t_gap)) \
+                * dx_face
+            q_ch_sink = jnp.sum(h_ch_new * channel_mask
+                                * (temperature - t_cool)) * dx_face
+            temperature = jnp.asarray(
+                advance_voxel_temperature(
+                    temperature, q_joule + q_iron, k_thermal, c_vol,
+                    spacing, dt, ambient_temperature=None,
+                    cooling_segments=segments,
+                ),
+                dtype=jnp.float32,
+            )
+            # Gap-air node: heated by the solid, cooled through the end
+            # faces to ambient (h_end from the Daily-Nece analogy, omega-
+            # dependent, inline of physics.airgap.end_face_convection).
+            nu_air_k = 1.91e-5 / 1.127
+            re_d = jnp.abs(omega) * r_gap ** 2 / nu_air_k
+            c_m = jnp.where(re_d < 3.0e5, 3.87 / jnp.sqrt(jnp.maximum(re_d, 1.0)),
+                            0.146 * jnp.maximum(re_d, 1.0) ** -0.2)
+            h_end = (c_m / 2.0 * 0.70 ** (2.0 / 3.0)) * 1.127 * (
+                jnp.abs(omega) * r_gap * math.sqrt(2.0 / 3.0)) * 1005.0
+            A_end = 2.0 * math.pi * r_gap ** 2
+            t_gap_new = t_gap + dt * (
+                q_gap_sink - h_end * A_end * (t_gap - ambient)
+            ) / C_gap
+            # Coolant node: quasi-steady through-flow enthalpy balance —
+            # T_out from the accumulated solid-to-fluid heat.
+            q_fl_acc_new = q_fl_acc + q_ch_sink * dt
+            t_cool_new = T_cool_in + q_fl_acc_new / jnp.maximum(
+                m_dot_new * 4179.0, 1e-6)
+        else:
+            m_dot_new = m_dot
+            h_ch_new = h_ch
+            q_gap_sink = jnp.asarray(0.0)
+            q_ch_sink = jnp.asarray(0.0)
+            q_fl_acc_new = q_fl_acc
+            t_gap_new = t_gap
+            t_cool_new = t_cool
+            temperature = jnp.asarray(
+                advance_voxel_temperature(
+                    temperature, q_joule + q_iron, k_thermal, c_vol, spacing, dt,
+                    ambient_temperature=ambient, cooling_coefficient=cool,
+                    cooling_mask=cooling_mask,
+                ),
+                dtype=jnp.float32,
+            )
         # Work-accounting convention: the semi-implicit rotor update is
         # omega_{k+1} = omega_k + (em - load)*dt/J, whose discrete work
         # identity is d(KE) = (em - load) * omega_{k+1} * dt for the LINEAR
@@ -814,9 +953,12 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             jnp.sum(currents ** 2) * R_t,  # circuit copper loss w/ R(T) [W]
             load * omega,                  # load + windage dissipation [W]
             aero * omega,                  # windage part only [W]
+            q_gap_sink + q_ch_sink,        # solid heat removed [W] (D7)
+            q_ch_sink,                     # fluid-side received [W] (D7)
         )
         return (angle, omega, currents, temperature, mapped_b,
-                v_d_int_new, v_q_int_new, trip_cnt_new), outs
+                v_d_int_new, v_q_int_new, trip_cnt_new, t_gap_new,
+                t_cool_new, m_dot_new, h_ch_new, q_fl_acc_new), outs
 
     @jax.jit
     def run(initial_angle: jnp.ndarray):
@@ -824,6 +966,9 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             initial_angle, jnp.asarray(0.0), jnp.zeros(3), temperature_init,
             _interp_uniform(b_map, initial_angle, period),
             jnp.asarray(0.0), jnp.asarray(0.0), jnp.asarray(0.0),
+            jnp.asarray(float(ambient)),      # t_gap
+            jnp.asarray(float(settings.coolant_inlet_temp_C)),  # t_cool
+            jnp.asarray(0.05), jnp.asarray(50.0), jnp.asarray(0.0),
         )
         final, hist = jax.lax.scan(step, init, jnp.arange(steps), length=steps)
         return final[3], hist
@@ -844,7 +989,8 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         maps["_scan"] = scan
     temperature_final, hist = scan(jnp.asarray(float(initial_angle)))
     (angle_h, speed_h, currents_h, torque_h, joule_h, iron_h, maxt_h,
-     elec_h, mech_h, copper_h, loadp_h, windp_h) = (np.asarray(x) for x in hist)
+     elec_h, mech_h, copper_h, loadp_h, windp_h, qsolid_h, qfluid_h
+     ) = (np.asarray(x) for x in hist)
     steps = int(settings.steps)
     rotor_angle = np.concatenate([[initial_angle], angle_h])
     speed = np.concatenate([[0.0], speed_h])
@@ -863,6 +1009,8 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         "copper_power_RL_W": copper_h,       # circuit i^2*R(T) (audit 6)
         "load_power_W": loadp_h,             # load + windage dissipation
         "windage_power_W": windp_h,          # aerodynamic part only
+        "solid_cooling_W": qsolid_h,         # heat leaving solid (D7)
+        "fluid_received_W": qfluid_h,        # fluid-side gain (D7)
         "max_temperature_C": max_temperature,
         "temperature_final": np.asarray(temperature_final),
     }

@@ -309,11 +309,21 @@ def advance_voxel_temperature(
     ambient_temperature: Array | float | None = None,
     cooling_coefficient: Array | float = 0.0,
     cooling_mask: Array | float = 0.0,
+    cooling_segments: list | None = None,
 ) -> Array:
     """Advance a true 3-D variable-property heat equation explicitly.
 
-    Grid exterior faces are adiabatic.  ``cooling_coefficient * cooling_mask``
-    supplies an optional volumetric ambient sink for boundary/interface models.
+    Grid exterior faces are adiabatic.  Two cooling interfaces:
+
+    ``cooling_coefficient * cooling_mask`` — legacy flat volumetric sink
+    to ``ambient_temperature`` (kept for backward compatibility).
+
+    ``cooling_segments`` — list of ``(mask, h, T_ref)`` triples, each a
+    DISTINCT boundary: e.g. the air-gap surface exchanging with the
+    tracked gap-air node, and the channel wall exchanging with the
+    tracked coolant node.  The sink per segment is ``h * mask *
+    (T - T_ref)`` [W/m^3] — callers use per-VOXEL volumetric h so the
+    solid-side integral is exactly computable for the energy audit.
     """
     if temperature.ndim != 3:
         raise ValueError("temperature must have shape (nx, ny, nz)")
@@ -337,6 +347,9 @@ def advance_voxel_temperature(
             * cooling_mask
             * (temperature - ambient_temperature)
         )
+    if cooling_segments:
+        for seg_mask, seg_h, seg_t in cooling_segments:
+            cooling = cooling + seg_h * seg_mask * (temperature - seg_t)
     return temperature + dt * (conduction + heat_density - cooling) / (
         heat_capacity + 1e-30
     )
