@@ -305,6 +305,7 @@ def compute_powered_maps(
     keep_volumes: bool = True,
     phases: Sequence[int] = (0, 1, 2),
     progress=None,
+    include_cross_terms: bool = False,
 ) -> dict:
     """Full torque decomposition T0/T1/T2 via sign- and zero-current solves.
 
@@ -424,6 +425,36 @@ def compute_powered_maps(
             nominal[p] /= max(1, n_series)
 
     t2_diag = t_static - t0_map[None, :]  # (3, na) self I^2 coefficients
+
+    # Optional cross terms (audit item 6): pair solves at (+1, +1)
+    # separate the neglected T2_pq.  T_pair = T0 + T1_p + T1_q + T2_pp +
+    # T2_qq + T2_pq, so T2_pq = T_pair - (everything already known).
+    t2_cross = None
+    if include_cross_terms:
+        t2_cross = np.zeros((3, na), dtype=np.float64)  # rows: (0,1),(0,2),(1,2)
+        pair_index = {(0, 1): 0, (0, 2): 1, (1, 2): 2}
+        for (p, q) in ((0, 1), (0, 2), (1, 2)):
+            if p not in phases or q not in phases:
+                continue
+            for i, angle in enumerate(angles):
+                if progress:
+                    pi = pair_index[(p, q)]
+                    progress(done, total_solves,
+                             f"pair {['A', 'B', 'C'][p]}{['A', 'B', 'C'][q]} "
+                             f"θ{i + 1}/{na} (+1,+1)")
+                belts_pq = jnp.stack([
+                    full[r] if r in (p, q) else zero for r in range(3)
+                ])
+                amp_pq = plus_amp[p] + plus_amp[q]
+                r_pair = phase_solver(belts_pq, float(angle), amp_pq)
+                done += 1
+                t_pair = float(r_pair.torques[0])
+                t2_cross[pair_index[(p, q)], i] = (
+                    t_pair - t0_map[i] - t_lin[p, i] - t_lin[q, i]
+                    - t2_diag[p, i] - t2_diag[q, i]
+                )
+        total_solves = done  # extend for reporting
+
     period = 2.0 * np.pi / cfg.pole_pairs
     map_angles = np.mod(np.asarray(angles, dtype=float), period)
     materials = material_fields3d(last_result, cfg)
@@ -453,6 +484,7 @@ def compute_powered_maps(
         "torque_static": t_static,
         "torque_cogging": t0_map,       # T0: zero-current PM-only torque
         "torque_i2_diag": t2_diag,      # T2_pp: per-phase self I^2 torque
+        "torque_i2_cross": t2_cross,    # T2_pq: pair cross terms (or None)
         "j_maps_ph": jnp.asarray(j_maps_ph) if keep_volumes else None,
         "b_map": jnp.asarray(b_map) if keep_volumes else None,
         "temperature_map": temperature_map,
@@ -509,6 +541,11 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     torques_ph = jnp.asarray(maps["torques_ph"], dtype=jnp.float32)   # (3, na)
     torques_t0 = jnp.asarray(maps["torque_cogging"], dtype=jnp.float32)  # (na,)
     torques_t2 = jnp.asarray(maps["torque_i2_diag"], dtype=jnp.float32)  # (3, na)
+    _cross_raw = maps.get("torque_i2_cross")
+    torques_t2_cross = (
+        jnp.asarray(_cross_raw, dtype=jnp.float32)
+        if _cross_raw is not None else None
+    )  # (3, na): pairs (0,1),(0,2),(1,2)
     j_maps_ph = jnp.asarray(maps["j_maps_ph"], dtype=jnp.float32)     # (3, na, X,Y,Z,3)
     b_map = jnp.asarray(maps["b_map"], dtype=jnp.float32)             # (na, X,Y,Z,3)
     temperature_init = jnp.asarray(maps["temperature_init"], dtype=jnp.float32)
@@ -719,8 +756,9 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
         #   em = T0(theta)                        PM-only cogging
         #      + sum_p T1_p(theta) * i_p          linear PM x current
         #      + sum_p T2_pp(theta) * i_p^2       current-self (reluctance)
+        #      + sum_pq T2_pq(theta) * i_p * i_q  cross terms (when solved)
         # T0 and T1 scale with the PM remanence factor psi_scale (D3);
-        # T2 does not.  Phase cross terms T2_pq*i_p*i_q not solved for.
+        # T2 terms do not.
         em_torque = (
             psi_scale * (
                 _interp_uniform(torques_t0, angle, period)
@@ -728,8 +766,17 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             )
             + jnp.sum(t2_vec * i_norm ** 2)
         )
-        load = load_torque(omega, constant=load_const, viscous=load_visc)
-        load = load + windage_torque(omega)  # aerodynamic braking (D2)
+        if torques_t2_cross is not None:
+            in_ = i_norm
+            cross = (
+                _interp_uniform(torques_t2_cross[0], angle, period) * in_[0] * in_[1]
+                + _interp_uniform(torques_t2_cross[1], angle, period) * in_[0] * in_[2]
+                + _interp_uniform(torques_t2_cross[2], angle, period) * in_[1] * in_[2]
+            )
+            em_torque = em_torque + cross
+        mech_load = load_torque(omega, constant=load_const, viscous=load_visc)
+        aero = windage_torque(omega)           # aerodynamic braking (D2)
+        load = mech_load + aero
         rotor = advance_rotor(
             RotorState(angle, omega), em_torque, load, J, dt
         )
@@ -752,15 +799,21 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             ),
             dtype=jnp.float32,
         )
+        # Work-accounting convention: the semi-implicit rotor update is
+        # omega_{k+1} = omega_k + (em - load)*dt/J, whose discrete work
+        # identity is d(KE) = (em - load) * omega_{k+1} * dt for the LINEAR
+        # integrator in exact arithmetic; float32 and the angle-dependent
+        # maps make it approximate — the energy audit quantifies the
+        # residual rather than assuming it is zero.
         outs = (
             angle, omega, currents, em_torque,
             jnp.sum(q_joule) * cell_volume, jnp.sum(q_iron) * cell_volume,
             jnp.max(temperature),
-            jnp.sum(voltage * currents),   # electrical input power [W] (B4)
-            # Consistent with the semi-implicit rotor integrator: the
-            # impulse acts on the post-update velocity, so work per step
-            # is em_torque * omega_{k+1} * dt exactly.
-            em_torque * omega,             # converted mechanical power [W]
+            jnp.sum(voltage * currents),   # port electrical input [W] (B4)
+            em_torque * omega,             # converted mechanical [W]
+            jnp.sum(currents ** 2) * R_t,  # circuit copper loss w/ R(T) [W]
+            load * omega,                  # load + windage dissipation [W]
+            aero * omega,                  # windage part only [W]
         )
         return (angle, omega, currents, temperature, mapped_b,
                 v_d_int_new, v_q_int_new, trip_cnt_new), outs
@@ -791,7 +844,7 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         maps["_scan"] = scan
     temperature_final, hist = scan(jnp.asarray(float(initial_angle)))
     (angle_h, speed_h, currents_h, torque_h, joule_h, iron_h, maxt_h,
-     elec_h, mech_h) = (np.asarray(x) for x in hist)
+     elec_h, mech_h, copper_h, loadp_h, windp_h) = (np.asarray(x) for x in hist)
     steps = int(settings.steps)
     rotor_angle = np.concatenate([[initial_angle], angle_h])
     speed = np.concatenate([[0.0], speed_h])
@@ -805,8 +858,11 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         "transient_torque_Nm": torque_h,
         "transient_joule_power_W": joule_h,
         "transient_iron_power_W": iron_h,
-        "electrical_power_W": elec_h,        # sum(v*i) per step (B4)
-        "mechanical_power_W": mech_h,        # em_torque*omega per step (B4)
+        "electrical_power_W": elec_h,        # port input sum(v*i) (B4)
+        "mechanical_power_W": mech_h,        # converted em_torque*omega
+        "copper_power_RL_W": copper_h,       # circuit i^2*R(T) (audit 6)
+        "load_power_W": loadp_h,             # load + windage dissipation
+        "windage_power_W": windp_h,          # aerodynamic part only
         "max_temperature_C": max_temperature,
         "temperature_final": np.asarray(temperature_final),
     }

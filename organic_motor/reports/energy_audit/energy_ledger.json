@@ -1,0 +1,168 @@
+{
+  "timestamp": "2026-09-06T12:49:47",
+  "model": "synthetic maps (6, 6, 6) (deterministic; the real 96^3 motor is gated by map-quality checks)",
+  "scenarios": [
+    {
+      "scenario": "zero_voltage",
+      "settings": {
+        "voltage": 0.0,
+        "load": 0.001,
+        "dt": 2e-05,
+        "steps": 5000,
+        "control": "open_loop"
+      },
+      "E_elec_J": 0.0,
+      "E_copper_J": 4.931099541823254e-14,
+      "E_conv_J": 1.9848946097855702e-10,
+      "dE_mag_J": 2.8950473124596585e-15,
+      "dKE_J": 2.316809222547586e-13,
+      "W_load_J": -9.704903547458343e-09,
+      "W_windage_J": 0.0,
+      "E_voxel_joule_J": 0.0,
+      "integrator_residual_J": 9.903160685053122e-09,
+      "circuit_rel_err": 0.1985416670212877,
+      "rotor_rel_err": 6.424615236091044e-07,
+      "copper_two_path_ratio": null,
+      "final_omega_rad_s": -6.807068712078035e-05
+    },
+    {
+      "scenario": "no_load_start",
+      "settings": {
+        "voltage": 24.0,
+        "load": 0.0,
+        "dt": 2e-05,
+        "steps": 5000,
+        "control": "current_control"
+      },
+      "E_elec_J": 1.7254197597503662,
+      "E_copper_J": 0.9737920165061951,
+      "E_conv_J": 0.6759940385818481,
+      "dE_mag_J": 0.048001896182982826,
+      "dKE_J": 0.6758580783023761,
+      "W_load_J": 0.0,
+      "W_windage_J": 0.0,
+      "E_voxel_joule_J": 0.0,
+      "integrator_residual_J": 0.00013537421071151568,
+      "circuit_rel_err": 0.016014542735582137,
+      "rotor_rel_err": 8.669732676214395e-07,
+      "copper_two_path_ratio": 0.0,
+      "final_omega_rad_s": 116.2633285522461
+    },
+    {
+      "scenario": "load_step_high",
+      "settings": {
+        "voltage": 24.0,
+        "load": 0.008,
+        "dt": 2e-05,
+        "steps": 5000,
+        "control": "current_control"
+      },
+      "E_elec_J": 1.392189621925354,
+      "E_copper_J": 0.9739782810211182,
+      "E_conv_J": 0.35787826776504517,
+      "dE_mag_J": 0.04800553694023677,
+      "dKE_J": 0.11002790533763546,
+      "W_load_J": 0.24782150983810425,
+      "W_windage_J": 0.0,
+      "E_voxel_joule_J": 0.0,
+      "integrator_residual_J": 2.8818884961467538e-05,
+      "circuit_rel_err": 0.008854782426768338,
+      "rotor_rel_err": 9.417823606028244e-08,
+      "copper_two_path_ratio": 0.0,
+      "final_omega_rad_s": 46.91010665893555
+    },
+    {
+      "scenario": "reversal",
+      "settings": {
+        "voltage": 24.0,
+        "load": 0.0,
+        "dt": 2e-05,
+        "steps": 5000,
+        "control": "current_control"
+      },
+      "E_elec_J": 1.538033127784729,
+      "E_copper_J": 0.9739574790000916,
+      "E_conv_J": 0.49774351716041565,
+      "dE_mag_J": 0.04801026195901547,
+      "dKE_J": 0.27068101744407613,
+      "W_load_J": 0.22700385749340057,
+      "W_windage_J": 0.0,
+      "E_voxel_joule_J": 0.0,
+      "integrator_residual_J": 5.8555281004494146e-05,
+      "circuit_rel_err": 0.011912532528864195,
+      "rotor_rel_err": 1.746721583147735e-07,
+      "copper_two_path_ratio": 0.0,
+      "final_omega_rad_s": -73.57730865478516
+    },
+    {
+      "scenario": "power_off_coast",
+      "settings": {
+        "voltage": 24.0,
+        "load": 0.0,
+        "dt": 2e-05,
+        "steps": 5000,
+        "control": "current_control"
+      },
+      "E_elec_J": 0.6818297505378723,
+      "E_copper_J": 0.48465073108673096,
+      "E_conv_J": 0.14350907504558563,
+      "dE_mag_J": 0.0,
+      "dKE_J": 0.03841483729396787,
+      "W_load_J": 0.10504511743783951,
+      "W_windage_J": 0.0,
+      "E_voxel_joule_J": 0.0,
+      "integrator_residual_J": 4.92689790351163e-05,
+      "circuit_rel_err": 0.07871458287529597,
+      "rotor_rel_err": 1.0359293085507386e-06,
+      "copper_two_path_ratio": 0.0,
+      "final_omega_rad_s": 27.71816635131836
+    },
+    {
+      "scenario": "dt_half",
+      "settings": {
+        "voltage": 24.0,
+        "load": 0.001,
+        "dt": 1e-05,
+        "steps": 10000,
+        "control": "current_control"
+      },
+      "E_elec_J": 1.4137507677078247,
+      "E_copper_J": 0.9738443493843079,
+      "E_conv_J": 0.3809088468551636,
+      "dE_mag_J": 0.048005601039459035,
+      "dKE_J": 0.12466563679988323,
+      "W_load_J": 0.2562268376350403,
+      "W_windage_J": 0.0,
+      "E_voxel_joule_J": 0.0,
+      "integrator_residual_J": 1.631982607272605e-05,
+      "circuit_rel_err": 0.007775041174135724,
+      "rotor_rel_err": 1.3807546801106132e-07,
+      "copper_two_path_ratio": 0.0,
+      "final_omega_rad_s": 49.933082580566406
+    },
+    {
+      "scenario": "windage_on",
+      "settings": {
+        "voltage": 24.0,
+        "load": 0.0,
+        "dt": 2e-05,
+        "steps": 5000,
+        "control": "current_control"
+      },
+      "E_elec_J": 1.7253313064575195,
+      "E_copper_J": 0.9737921357154846,
+      "E_conv_J": 0.6759118437767029,
+      "dE_mag_J": 0.04800189590207885,
+      "dKE_J": 0.6755596294300747,
+      "W_load_J": 0.00021712003217544407,
+      "W_windage_J": 0.00021712003217544407,
+      "E_voxel_joule_J": 0.0,
+      "integrator_residual_J": 0.00013531437239184358,
+      "circuit_rel_err": 0.016011667417067926,
+      "rotor_rel_err": 3.2557195325150924e-07,
+      "copper_two_path_ratio": 0.0,
+      "final_omega_rad_s": 116.23765563964844
+    }
+  ],
+  "wall_time_s": 5.429493427276611
+}
