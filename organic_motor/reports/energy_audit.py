@@ -24,6 +24,7 @@ coast, dt-halving refinement.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -32,6 +33,17 @@ import numpy as np
 OUT = Path(__file__).parent / "energy_audit"
 
 from tests.test_powered_control import _synthetic_maps, _base_settings  # noqa: E402
+
+
+def _git_hash():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent.parent.parent,
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 def ledger(data, settings):
@@ -75,10 +87,129 @@ def run_scenario(cfg, name, **ov):
     }, **ledger(data, s)}
 
 
-def main(cfg_shape=(6, 6, 6)):
+def run_artifact_audit(artifact_dir: str | Path, steps: int = 4000):
+    """Run the energy ledger on the REAL assembly artifact (not synthetic).
+
+    Loads model_meta.json + checkpoint NPZ, computes solver fields and
+    powered maps, then runs the same scenarios as the synthetic audit.
+    Requires GPU and takes ~2 min for map solves.
+    """
+    from organic_motor.construct.model_artifact import ModelArtifact
+    from organic_motor.config3d import MotorConfig3D
+    from organic_motor.construct.startup_validation import _logits_from_densities
+    from organic_motor.construct.transient_bridge import (
+        extract_electrical_parameters, extract_fea_flux_linkage,
+    )
+    from organic_motor.experiments.motor3d_powered import (
+        Powered3DSettings, compute_powered_maps, run_powered_transient,
+    )
+    import inspect
+    import jax.numpy as jnp
+
+    artifact = ModelArtifact.load(Path(artifact_dir))
+    can_run, reasons = artifact.can_energize()
+    if not can_run:
+        return {"error": "artifact rejected", "reasons": reasons}
+
+    valid_params = set(inspect.signature(MotorConfig3D.__init__).parameters.keys()) - {"self"}
+    cfg_kwargs = {"shape": tuple(artifact.shape)}
+    for k, v in artifact.config_dict.items():
+        if k not in valid_params:
+            continue
+        if isinstance(v, list) and len(v) == 3:
+            cfg_kwargs[k] = tuple(v)
+        elif isinstance(v, (int, float, str, bool)):
+            cfg_kwargs[k] = v
+    cfg = MotorConfig3D(**cfg_kwargs)
+
+    logits = _logits_from_densities(artifact, cfg)
+    fields, mag = artifact.solver_fields(cfg)
+    registry = artifact.centerline_registry or None
+
+    flux_fea = extract_fea_flux_linkage(
+        None, cfg, artifact.magnetization,
+        fields=fields, registry=registry)
+    electrical = extract_electrical_parameters(
+        None, cfg, flux_linkage_fea=flux_fea,
+        registry=registry, copper_fraction=artifact.densities.get("rho_copper"))
+
+    n_turns_override = int(registry[0].get("n_turns", 1)) if registry else None
+
+    p_settings = Powered3DSettings(
+        phase_voltage_peak=24.0,
+        phase_resistance=electrical.phase_resistance,
+        phase_inductance=electrical.phase_inductance,
+        flux_linkage=electrical.flux_linkage,
+        control_mode="current_control",
+        i_q_ref_A=8.0,
+        load_torque=5e-3,
+        steps=steps,
+        dt=2.0e-5,
+        thermal_coupling="coupled",
+    )
+
+    import numpy as np
+    n_map_angles = 6
+    elec_period = 2.0 * np.pi / cfg.pole_pairs
+    angles_map = np.linspace(0, elec_period, n_map_angles, endpoint=False)
+
+    from organic_motor.optimization.objective3d import forward3d_fields
+
+    def phase_solver(single, angle, amplitudes):
+        return forward3d_fields(
+            cfg, fields, mag, [angle], single,
+            phase_amplitudes=amplitudes,
+            centerline_registry=registry,
+        )
+
+    maps = compute_powered_maps(
+        cfg, logits, None, mag,
+        angles_map, p_settings,
+        phase_solver=phase_solver,
+        include_mechanics=False,
+        n_turns_override=n_turns_override,
+        filter_harmonics=True,
+    )
+
+    psi_map = float(maps.get("psi_from_map", 0.0))
+    if psi_map > 1e-8:
+        from dataclasses import replace as _replace
+        p_settings = _replace(p_settings, flux_linkage=psi_map)
+        maps.pop("_scan", None)
+
+    maps["temperature_init"] = jnp.full(cfg.shape, float(cfg.ambient_temperature), dtype=jnp.float32)
+
+    # Run scenarios
+    scenarios = []
+    for name, ov in [
+        ("no_load", {"load_torque": 0.0}),
+        ("load_step", {"load_torque": 8e-3}),
+        ("power_off", {"power_off_at_s": 0.05, "load_torque": 0.0}),
+    ]:
+        s = _replace(p_settings, **ov) if ov else p_settings
+        maps_copy = dict(maps)
+        maps_copy.pop("_scan", None)
+        data = run_powered_transient(maps_copy, s, cfg, 0.0)
+        scenarios.append({"scenario": name, "settings": {
+            "voltage": s.phase_voltage_peak, "load": s.load_torque,
+            "dt": s.dt, "steps": s.steps, "control": s.control_mode,
+            "thermal_coupling": s.thermal_coupling,
+        }, **ledger(data, s)})
+
+    return {
+        "design_hash": artifact.design_hash,
+        "psi_fea_Wb": electrical.flux_linkage,
+        "psi_map_Wb": psi_map,
+        "n_turns": n_turns_override,
+        "scenarios": scenarios,
+    }
+
+
+def main(cfg_shape=(6, 6, 6), run_artifact=False):
     from organic_motor.config3d import MotorConfig3D
     cfg = MotorConfig3D(shape=cfg_shape)
     t0 = time.time()
+    git_hash = _git_hash()
     scenarios = [
         run_scenario(cfg, "zero_voltage", phase_voltage_peak=0.0),
         run_scenario(cfg, "no_load_start", control_mode="current_control",
@@ -99,15 +230,35 @@ def main(cfg_shape=(6, 6, 6)):
     ]
     report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "git_commit": git_hash,
         "model": f"synthetic maps {cfg_shape} (deterministic; the real "
                  "96^3 motor is gated by map-quality checks)",
         "scenarios": scenarios,
         "wall_time_s": time.time() - t0,
     }
+
+    # --- Real artifact audit (if requested) ---
+    artifact_dir = Path(__file__).parent.parent / "out" / "assembly"
+    if run_artifact and (artifact_dir / "model_meta.json").exists():
+        print("[energy audit] running artifact audit on assembly...")
+        t_art = time.time()
+        try:
+            art = run_artifact_audit(artifact_dir, steps=4000)
+            art["wall_time_s"] = time.time() - t_art
+            report["artifact_audit"] = art
+            print(f"[energy audit] artifact done in {art['wall_time_s']:.0f}s")
+        except Exception as e:
+            report["artifact_audit"] = {"error": str(e)}
+            print(f"[energy audit] artifact failed: {e}")
+
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "energy_ledger.json").write_text(
-        json.dumps(report, indent=2), encoding="utf-8")
+        json.dumps(report, indent=2, default=str), encoding="utf-8")
     lines = [
+        f"# Energy Audit (git {git_hash})",
+        "",
+        "## Synthetic Model",
+        "",
         "| 场景 | 电路误差 | 转子误差 | E_elec | E_conv | W_load | 末速 |",
         "|---|---|---|---|---|---|---|",
     ]
@@ -119,6 +270,28 @@ def main(cfg_shape=(6, 6, 6)):
             f"{s['rotor_rel_err']*100:.2f}% | {s['E_elec_J']*1e3:.2f} mJ | "
             f"{s['E_conv_J']*1e3:.2f} mJ | {s['W_load_J']*1e3:.2f} mJ | "
             f"{s['final_omega_rad_s']:.1f} rad/s |")
+
+    if "artifact_audit" in report and "scenarios" in report.get("artifact_audit", {}):
+        art = report["artifact_audit"]
+        lines.extend([
+            "",
+            f"## Real Assembly Artifact (hash {art.get('design_hash', '?')})",
+            f"- ψ_FEA = {art.get('psi_fea_Wb', 0):.5f} Wb",
+            f"- ψ_map = {art.get('psi_map_Wb', 0):.5f} Wb",
+            f"- n_turns = {art.get('n_turns', '?')}",
+            "",
+            "| 场景 | 电路误差 | 转子误差 | E_elec | E_conv | W_load | 末速 |",
+            "|---|---|---|---|---|---|---|",
+        ])
+        for s in art["scenarios"]:
+            ce = f"{s['circuit_rel_err']*100:.2f}%" \
+                if s["circuit_rel_err"] is not None else "n/a"
+            lines.append(
+                f"| {s['scenario']} | {ce} | "
+                f"{s['rotor_rel_err']*100:.2f}% | {s['E_elec_J']*1e3:.2f} mJ | "
+                f"{s['E_conv_J']*1e3:.2f} mJ | {s['W_load_J']*1e3:.2f} mJ | "
+                f"{s['final_omega_rad_s']:.1f} rad/s |")
+
     (OUT / "energy_ledger.md").write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
     print(f"\n[energy audit] written to {OUT}")
@@ -126,4 +299,6 @@ def main(cfg_shape=(6, 6, 6)):
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    run_art = "--artifact" in sys.argv
+    main(run_artifact=run_art)

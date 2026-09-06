@@ -545,7 +545,6 @@ def _run_simulation_thread(
             rotor_inertia=rotor_inertia,
             include_windage=include_windage,
             thermal_coupling="coupled",
-            n_turns_override=n_turns_override,
         )
 
         n_map_angles = 6
