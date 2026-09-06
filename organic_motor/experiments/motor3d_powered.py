@@ -82,6 +82,9 @@ class Powered3DSettings:
     # --- B5: copper resistance temperature feedback ---
     resistance_temp_coeff: float = 0.00393  # copper alpha [1/K]
     resistance_ref_temp_C: float = 20.0
+    # --- D3: PM temperature feedback (NdFeB remanence coefficient) ---
+    pm_temp_coeff: float = -0.0012  # dB/dT ~ -0.12 %/K
+    pm_temp_ref_C: float = 20.0
     # --- D2: aerodynamic rotor load (windage) ---
     include_windage: bool = False
     windage_rotor_radius_m: float | None = None  # default R_sleeve_outer
@@ -551,6 +554,13 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     cu_weight = jnp.maximum(copper_fraction, 0.0)
     cu_total = jnp.maximum(jnp.sum(cu_weight), 1e-12)
 
+    # --- D3: PM temperature feedback coefficients ---
+    k_pm = settings.pm_temp_coeff
+    pm_ref_temp = settings.pm_temp_ref_C
+    pm_weight = jnp.maximum(jnp.asarray(materials["fractions"][3],
+                                        dtype=jnp.float32), 0.0)
+    pm_total = jnp.maximum(jnp.sum(pm_weight), 1e-12)
+
     # --- D2: windage torque coefficients (constant per geometry) ---
     include_windage = settings.include_windage
     if include_windage:
@@ -601,8 +611,15 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
         T_cu = jnp.sum(temperature * cu_weight) / cu_total
         R_t = R * (1.0 + alpha_R * (T_cu - R_ref_temp))
 
+        # --- PM temperature feedback (D3): remanence scales psi and the
+        # PM torque terms; reluctance terms unchanged (first-order model,
+        # maps computed at reference temperature) ---
+        T_pm = jnp.sum(temperature * pm_weight) / pm_total
+        psi_t = psi * (1.0 + k_pm * (T_pm - pm_ref_temp))
+        psi_scale = psi_t / max(psi, 1e-12)
+
         # Back-EMF is known analytically: use it as controller feedforward.
-        back_emf = sinusoidal_back_emf(angle, omega, p, psi)
+        back_emf = sinusoidal_back_emf(angle, omega, p, psi_t)
 
         # --- voltage source: PI current controller or open loop ---
         if control_mode == "current_control":
@@ -666,10 +683,13 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
         #   em = T0(theta)                        PM-only cogging
         #      + sum_p T1_p(theta) * i_p          linear PM x current
         #      + sum_p T2_pp(theta) * i_p^2       current-self (reluctance)
-        # Phase-to-phase cross terms T2_pq*i_p*i_q are not solved for.
+        # T0 and T1 scale with the PM remanence factor psi_scale (D3);
+        # T2 does not.  Phase cross terms T2_pq*i_p*i_q not solved for.
         em_torque = (
-            _interp_uniform(torques_t0, angle, period)
-            + jnp.sum(torque_vec * i_norm)
+            psi_scale * (
+                _interp_uniform(torques_t0, angle, period)
+                + jnp.sum(torque_vec * i_norm)
+            )
             + jnp.sum(t2_vec * i_norm ** 2)
         )
         load = load_torque(omega, constant=load_const, viscous=load_visc)

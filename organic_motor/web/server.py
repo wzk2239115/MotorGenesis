@@ -189,15 +189,19 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
         if not npz.is_file():
             raise HTTPException(status_code=404, detail="checkpoint not found")
         # Physics fields (temperature/|B|/|J|) only exist in the final forward
-        # solve; fall back to it so the slice panel keeps working on every step.
+        # solve; fall back to it so the slice panel keeps working on every
+        # step — but LABEL the source and refuse mismatched grids (C8).
         fallback = run_dir / "final_simulation3d.npz"
-        return builder.field_slice(
-            npz,
-            field,
-            axis=axis,
-            index=index,
-            fallback_npz=fallback if fallback.is_file() else None,
-        )
+        try:
+            return builder.field_slice(
+                npz,
+                field,
+                axis=axis,
+                index=index,
+                fallback_npz=fallback if fallback.is_file() else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/runs/{run_name}/checkpoint/{step}/metrics")
     def get_metrics(run_name: str, step: int) -> dict:

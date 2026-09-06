@@ -234,9 +234,22 @@ def field_slice(
     consistent across the timeline.
     """
     files, spacing, origin = _load_fields(npz_path)
-    if field in PHYSICS_FIELDS and fallback_npz is not None and field not in _available_names(files):
-        phys_files, _, _ = _load_fields(fallback_npz)
-        files.update(phys_files)
+    source = "checkpoint"
+    if field in PHYSICS_FIELDS and field not in _available_names(files):
+        if fallback_npz is not None:
+            phys_files, _, _ = _load_fields(fallback_npz)
+            fb_array = _select_field(phys_files, field)
+            ck_shape = _select_field(files, "rho_iron").shape \
+                if "rho_iron" in files else None
+            if ck_shape is not None and fb_array.shape != ck_shape:
+                raise ValueError(
+                    f"field {field!r} fallback grid {fb_array.shape} does not "
+                    f"match checkpoint grid {ck_shape} — refusing to mix grids"
+                )
+            files.update(phys_files)
+            source = "final_simulation3d"
+        else:
+            raise ValueError(f"field {field!r} not computed in this run")
     array = _select_field(files, field)
     if not spacing:
         spacing = (1.0, 1.0, 1.0)
@@ -266,6 +279,11 @@ def field_slice(
         "vmin": vmin,
         "vmax": vmax,
         "extents": extents,
+        "source": source,
+        "source_label": (
+            "本步数据" if source == "checkpoint"
+            else "最终求解参考场 (t=final, 非本步时刻)"
+        ),
     }
 
 

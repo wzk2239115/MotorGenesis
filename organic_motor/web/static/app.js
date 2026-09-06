@@ -436,9 +436,25 @@ async function loadSlice() {
   const url = `/api/runs/${encodeURIComponent(state.currentRun)}/checkpoint/${step}/slice?field=${sliceState.field}&axis=${sliceState.axis}&index=${idx}`;
   try {
     const res = await fetch(url);
-    if (!res.ok) return;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const canvas = $("sliceCanvas");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#666";
+      ctx.font = "12px sans-serif";
+      ctx.fillText("未计算", 12, canvas.height / 2);
+      const src = $("sliceSource");
+      if (src) src.textContent = `⚠ ${err.detail || "该场在此运行中未计算"}`;
+      return;
+    }
     const data = await res.json();
     drawSlice(data);
+    const src = $("sliceSource");
+    if (src) {
+      src.textContent = data.source_label
+        ? `数据来源: ${data.source_label}` : "";
+    }
     const si = $("sliceIndex");
     si.max = (data.shape[0] || 1) - 1;
     si.value = data.index;

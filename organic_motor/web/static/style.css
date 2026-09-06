@@ -150,3 +150,4 @@ footer { margin-top: auto; padding-top: 6px; }
 .sim-playback input[type=range] { flex: 1; }
 .sim-playback span { font-size: 10px; color: var(--muted); white-space: nowrap; }
 #curvesCanvas { width: 100%; height: auto; margin-top: 4px; background: rgba(10,18,25,0.8); border-radius: 4px; }
+.slice-source { font-size: 10px; color: var(--muted); margin-top: 3px; min-height: 14px; }

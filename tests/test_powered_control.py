@@ -40,8 +40,8 @@ def _synthetic_maps(cfg, i_nom=10.0):
     b_map = np.zeros((NA,) + shape + (3,), dtype=np.float32)
 
     fractions = np.stack([
-        np.full(shape, 0.6), np.full(shape, 0.3),
-        np.full(shape, 0.1), np.zeros(shape),
+        np.full(shape, 0.55), np.full(shape, 0.3),
+        np.full(shape, 0.1), np.full(shape, 0.05),
     ]).astype(np.float32)
     k_mix = np.tensordot(
         np.array((0.026, 50.0, 400.0, 10.0)), fractions, axes=(0, 0)
@@ -293,15 +293,41 @@ class TestResistanceTempFeedback:
         )
 
     def test_no_feedback_when_alpha_zero(self, cfg):
-        """alpha=0 must make initial response identical regardless of temperature."""
+        """alpha=0 AND pm_coeff=0 must make response temperature-invariant."""
         maps_cold = _synthetic_maps(cfg)
         maps_hot = _synthetic_maps(cfg)
         maps_hot["temperature_init"] = np.full(cfg.shape, 120.0, dtype=np.float32)
         s = dict(control_mode="current_control", i_q_ref_A=5.0,
-                 resistance_temp_coeff=0.0)
+                 resistance_temp_coeff=0.0, pm_temp_coeff=0.0)
         d_cold = run_powered_transient(maps_cold, _base_settings(**s), cfg, 0.0)
         d_hot = run_powered_transient(maps_hot, _base_settings(**s), cfg, 0.0)
         assert np.allclose(d_cold["currents_A"], d_hot["currents_A"], atol=1e-4)
+
+
+class TestPMTemperatureFeedback:
+    def test_hot_magnet_less_torque(self, cfg):
+        """Hot PM (lower remanence) must produce less torque/speed."""
+        maps_cold = _synthetic_maps(cfg)
+        maps_hot = _synthetic_maps(cfg)
+        maps_hot["temperature_init"] = np.full(cfg.shape, 120.0, dtype=np.float32)
+        s = dict(control_mode="current_control", i_q_ref_A=8.0,
+                 resistance_temp_coeff=0.0)  # isolate the PM effect
+        d_cold = run_powered_transient(maps_cold, _base_settings(**s), cfg, 0.0)
+        d_hot = run_powered_transient(maps_hot, _base_settings(**s), cfg, 0.0)
+        assert d_hot["angular_velocity_rad_s"][-1] < \
+            d_cold["angular_velocity_rad_s"][-1]
+
+    def test_zero_pm_coeff_no_effect(self, cfg):
+        maps_cold = _synthetic_maps(cfg)
+        maps_hot = _synthetic_maps(cfg)
+        maps_hot["temperature_init"] = np.full(cfg.shape, 120.0, dtype=np.float32)
+        s = dict(control_mode="current_control", i_q_ref_A=8.0,
+                 resistance_temp_coeff=0.0, pm_temp_coeff=0.0)
+        d_cold = run_powered_transient(maps_cold, _base_settings(**s), cfg, 0.0)
+        d_hot = run_powered_transient(maps_hot, _base_settings(**s), cfg, 0.0)
+        assert np.allclose(d_cold["currents_A"], d_hot["currents_A"], atol=1e-4)
+        assert d_cold["angular_velocity_rad_s"][-1] == pytest.approx(
+            d_hot["angular_velocity_rad_s"][-1], rel=1e-4)
 
 
 class TestThermalStabilityCheckD4:
