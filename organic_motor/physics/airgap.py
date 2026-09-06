@@ -32,6 +32,7 @@ from typing import NamedTuple
 # Air at ~40 degC, 1 atm (approximate; consistent with flow1d water style)
 RHO_AIR = 1.127      # kg/m3
 MU_AIR = 1.91e-5     # Pa s
+NU_AIR = MU_AIR / RHO_AIR  # m2/s
 K_AIR = 0.0276       # W/m/K
 PR_AIR = 0.70
 
@@ -148,6 +149,43 @@ class WindageResult(NamedTuple):
     notes: str
 
 
+def windage_torque_formula(xp, omega, r_rotor, length, gap,
+                           n_end_disks: int = 2):
+    """SINGLE-SOURCE windage torque, usable with numpy OR jax.numpy.
+
+    The speed dependence is kept INSIDE the coefficients:
+      side, laminar (Ta < 1700):  T = 2*pi*mu*omega*r^3*L/delta
+          (exact laminar Couette, LINEAR in omega)
+      side, turbulent:            T = pi*0.08*rho*r^4*L*(r*delta/nu)^-0.25
+                                      * omega*|omega|^0.75
+      disk, laminar (Re < 3e5):   T = (pi/2)*3.87*rho*r^5*(r^2/nu)^-0.5
+                                      * omega*|omega|^0.5   (each)
+      disk, turbulent:            T = (pi/2)*0.146*rho*r^5*(r^2/nu)^-0.2
+                                      * omega*|omega|^0.8   (each)
+
+    All branches are ODD in omega (works for reversed rotation) and
+    strictly dissipative (T*omega >= 0).  Returns (total, side, disk).
+    """
+    gap = xp.maximum(gap, 1e-9)
+    w = xp.abs(omega)
+    re_gap = w * r_rotor * gap / NU_AIR
+    ta = re_gap ** 2 * (gap / r_rotor)
+    re_disk = w * r_rotor ** 2 / NU_AIR
+
+    k1 = 2.0 * math.pi * MU_AIR * r_rotor ** 3 * length / gap
+    k2 = (math.pi * 0.08 * RHO_AIR * r_rotor ** 4 * length
+          * (r_rotor * gap / NU_AIR) ** -0.25)
+    side = xp.where(ta < TA_CRITICAL, k1 * omega, k2 * omega * w ** 0.75)
+
+    d1 = n_end_disks * 0.5 * math.pi * 3.87 * RHO_AIR * r_rotor ** 5 \
+        * (r_rotor ** 2 / NU_AIR) ** -0.5
+    d2 = n_end_disks * 0.5 * math.pi * 0.146 * RHO_AIR * r_rotor ** 5 \
+        * (r_rotor ** 2 / NU_AIR) ** -0.2
+    disk = xp.where(re_disk < RE_DISK_TURB,
+                    d1 * omega * w ** 0.5, d2 * omega * w ** 0.8)
+    return side + disk, side, disk
+
+
 def rotor_windage(
     omega_rad_s: float,
     r_rotor_m: float,
@@ -155,45 +193,39 @@ def rotor_windage(
     gap_m: float,
     n_end_disks: int = 2,
 ) -> WindageResult:
-    """Windage torque/power of a smooth cylindrical rotor.
+    """Windage torque/power of a smooth cylindrical rotor (numpy path).
 
-    Side: exact laminar Couette c_f = 2/Re_delta below the Taylor
-    transition; turbulent branch c_f = 0.08*Re_delta^-0.25 (engineering
-    estimate, Blasius-analog).  End faces: Daily & Nece C_M.
+    Thin wrapper over :func:`windage_torque_formula` — the SAME math the
+    JAX transient uses, so the two cannot drift apart.  Side: laminar
+    exact / turbulent engineering estimate; disks Daily & Nece (1960).
     """
-    if omega_rad_s <= 0 or r_rotor_m <= 0:
+    if omega_rad_s == 0.0 or r_rotor_m <= 0:
         return WindageResult(0.0, 0.0, 0.0, 0.0, "static", "no rotation")
-    nu = MU_AIR / RHO_AIR
+    import numpy as np
+    total, side, disk = windage_torque_formula(
+        np, omega_rad_s, r_rotor_m, length_m, gap_m, n_end_disks)
+    total, side, disk = (float(total), float(side), float(disk))
 
-    # --- cylindrical side through the gap ---
-    re_gap = omega_rad_s * r_rotor_m * max(gap_m, 1e-9) / nu
+    nu = NU_AIR
+    re_gap = abs(omega_rad_s) * r_rotor_m * max(gap_m, 1e-9) / nu
     ta = re_gap ** 2 * (max(gap_m, 1e-9) / r_rotor_m)
+    re_disk = abs(omega_rad_s) * r_rotor_m ** 2 / nu
     if ta < TA_CRITICAL:
-        # Exact laminar Couette: tau = mu*omega*r/delta gives
-        # T = pi*c_f*rho*omega^2*r^4*L with c_f = 2/Re_delta.
-        c_f = 2.0 / max(re_gap, 1e-9)
-        side_regime = "laminar_couette_exact"
-        side_note = "c_f = 2/Re_delta (exact laminar Couette)"
+        side_regime, side_note = "laminar_couette_exact", \
+            "c_f = 2/Re_delta (exact laminar Couette)"
     else:
-        c_f = 0.08 * re_gap ** -0.25
-        side_regime = "turbulent_estimate"
-        side_note = "c_f = 0.08*Re^-0.25 (Blasius-analog estimate)"
-    side_torque = math.pi * c_f * RHO_AIR * omega_rad_s ** 2 * r_rotor_m ** 4 * length_m
-
-    # --- end disks (Daily & Nece) ---
-    re_disk = omega_rad_s * r_rotor_m ** 2 / nu
-    c_m = _disk_moment_coefficient(re_disk)
-    disk_torque = (
-        c_m * 0.5 * math.pi * RHO_AIR * omega_rad_s ** 2 * r_rotor_m ** 5
-    )
-    total_disk = n_end_disks * disk_torque
-
-    total = side_torque + total_disk
+        side_regime, side_note = "turbulent_estimate", \
+            "c_f = 0.08*Re^-0.25 (Blasius-analog estimate)"
+    if re_disk < RE_DISK_TURB:
+        disk_regime = "laminar_disk_daily_nece"
+    else:
+        disk_regime = "turbulent_disk_daily_nece"
     return WindageResult(
         torque_Nm=total, power_W=total * omega_rad_s,
-        side_torque_Nm=side_torque, disk_torque_Nm=total_disk,
-        regime=f"{side_regime}+disk",
-        notes=f"{side_note}; disks Daily-Nece",
+        side_torque_Nm=side, disk_torque_Nm=disk,
+        regime=f"{side_regime}+{disk_regime}",
+        notes=f"{side_note}; disks Daily-Nece (verified constants); "
+              "turbulent side branch flagged engineering estimate",
     )
 
 

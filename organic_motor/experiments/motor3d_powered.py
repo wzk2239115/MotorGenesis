@@ -564,7 +564,8 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
                                         dtype=jnp.float32), 0.0)
     pm_total = jnp.maximum(jnp.sum(pm_weight), 1e-12)
 
-    # --- D2: windage torque coefficients (constant per geometry) ---
+    # --- D2: windage via the SHARED formula (same math as
+    # physics.airgap.rotor_windage — single source, no drift) ---
     include_windage = settings.include_windage
     # --- over-EMF trip: sustained total-voltage saturation opens the
     # contactor (real inverter protection; also bounds the known
@@ -573,6 +574,7 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     trip_steps = int(settings.overemf_trip_steps)
     trip_enabled = trip_steps > 0
     if include_windage:
+        from organic_motor.physics.airgap import windage_torque_formula
         r_w = float(settings.windage_rotor_radius_m
                     if settings.windage_rotor_radius_m is not None
                     else getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer))
@@ -583,23 +585,11 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
                     if settings.windage_gap_m is not None
                     else (cfg.R_stator_inner
                           - getattr(cfg, "R_sleeve_outer", cfg.R_rotor_outer)))
-        nu_air = 1.91e-5 / 1.127
-        re_gap_0 = r_w * max(g_w, 1e-9) / nu_air          # omega multiplier
-        ta_0 = re_gap_0 ** 2 * (max(g_w, 1e-9) / r_w)     # omega^2 multiplier
-        re_disk_0 = r_w ** 2 / nu_air
-        side_lam = math.pi * (2.0 / max(re_gap_0, 1e-9)) * 1.127 * r_w ** 4 * l_w
-        side_turb = math.pi * 0.08 * re_gap_0 ** -0.25 * 1.127 * r_w ** 4 * l_w
-        ta_c = 1700.0
-        disk_lam = 2.0 * 3.87 * 0.5 * math.pi * 1.127 * r_w ** 5
-        disk_turb = 2.0 * 0.146 * re_disk_0 ** -0.2 * 0.5 * math.pi * 1.127 * r_w ** 5
-        re_disk_c = 3.0e5
 
         def windage_torque(w):
-            side = jnp.where(ta_0 * w ** 2 < ta_c,
-                             side_lam * w ** 2, side_turb * w ** 2.0)
-            disk = jnp.where(re_disk_0 * w < re_disk_c,
-                             disk_lam * w ** 2, disk_turb * w ** 2)
-            return side + disk
+            total, _side, _disk = windage_torque_formula(
+                jnp, w, r_w, l_w, g_w)
+            return total
     else:
         def windage_torque(w):
             return jnp.asarray(0.0)
