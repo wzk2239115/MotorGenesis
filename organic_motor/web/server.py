@@ -354,6 +354,11 @@ def _run_simulation_thread(
         load_torque = float(settings.get("load_torque", 0.005))
         load_viscous = float(settings.get("load_viscous", 1.0e-4))
         rotor_inertia = float(settings.get("rotor_inertia", 2.0e-4))
+        control_mode = str(settings.get("control_mode", "open_loop"))
+        i_q_ref = settings.get("i_q_ref_A")
+        i_q_ref = float(i_q_ref) if i_q_ref is not None else None
+        power_off_at = settings.get("power_off_at_s")
+        power_off_at = float(power_off_at) if power_off_at is not None else None
 
         if electrical.flux_linkage < 1e-8:
             sim["status"] = "rejected"
@@ -367,6 +372,9 @@ def _run_simulation_thread(
             flux_linkage=electrical.flux_linkage,
             current_limit=current_limit,
             commutation_offset=0.0,
+            control_mode=control_mode,
+            i_q_ref_A=i_q_ref,
+            power_off_at_s=power_off_at,
             steps=steps,
             dt=dt,
             load_torque=load_torque,

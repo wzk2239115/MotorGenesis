@@ -558,12 +558,18 @@ let simState = {
 
 async function startSimulation() {
   if (!state.currentRun) { status("请先选择运行实例", "error"); return; }
+  const controlMode = $("simControlMode").value;
+  const iqRefRaw = parseFloat($("simIqRef").value);
+  const poRaw = parseFloat($("simPowerOff").value);
   const params = {
     voltage: parseFloat($("simVoltage").value) || 24,
     current_limit: parseFloat($("simCurrentLimit").value) || 50,
     initial_angle: (parseFloat($("simInitialAngle").value) || 0) * Math.PI / 180,
     load_torque: parseFloat($("simLoadTorque").value) || 0.005,
     steps: parseInt($("simSteps").value) || 4000,
+    control_mode: controlMode,
+    i_q_ref_A: isNaN(iqRefRaw) ? null : iqRefRaw,
+    power_off_at_s: isNaN(poRaw) ? null : poRaw / 1000.0,
   };
   $("simRunBtn").disabled = true;
   $("simStatus").textContent = "提交中…";

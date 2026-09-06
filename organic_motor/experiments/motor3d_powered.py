@@ -69,6 +69,18 @@ class Powered3DSettings:
     mechanical_tol: float = 1.0e-5
     cooling_coefficient: float = 2.0e4
     eddy_loss_coefficient: float = 1.0e-4
+    # --- B3: average-inverter current controller (dq PI) ---
+    control_mode: str = "open_loop"  # "open_loop" | "current_control"
+    i_q_ref_A: float | None = None    # q-axis current reference [A]
+    i_d_ref_A: float = 0.0            # d-axis current reference [A]
+    current_bw_Hz: float = 500.0      # PI bandwidth [Hz] for auto gains
+    voltage_limit_V: float | None = None  # inverter phase limit [V];
+    #   default: phase_voltage_peak (ideal three-phase inverter)
+    # --- B6: physical power disconnection ---
+    power_off_at_s: float | None = None  # voltage zero after this time [s]
+    # --- B5: copper resistance temperature feedback ---
+    resistance_temp_coeff: float = 0.00393  # copper alpha [1/K]
+    resistance_ref_temp_C: float = 20.0
 
 
 def load_design3d(
@@ -444,6 +456,23 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     interpolation, RL circuit, rotor dynamics and the voxel temperature
     advance all fuse into a single compiled kernel, eliminating the
     per-step Python dispatch that dominated the old loop.
+
+    Control modes:
+      ``open_loop``: sinusoidal voltage at fixed amplitude (historical).
+      ``current_control``: average-inverter model — dq Park transform of
+      measured currents, PI regulators (bandwidth-tuned, conditional
+      anti-windup integration, magnitude voltage saturation), inverse
+      Park to phase voltages.  This replaces clip-based fake control.
+
+    Physics feedback:
+      - Copper phase resistance scales with mean winding temperature
+        (R = R_ref * (1 + alpha*(T_cu - T_ref))).
+      - Optional physical power disconnection at ``power_off_at_s``.
+      - Explicit-Euler thermal stability is verified at build time (D4).
+
+    Energy accounting (B4): per-step electrical input power sum(v*i) and
+    converted mechanical power em_torque*omega are returned so callers
+    can close the energy balance in post-processing.
     """
     p = cfg.pole_pairs
     period = maps["period"]
@@ -456,7 +485,7 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     materials = maps["materials"]
     masks = maps["masks"]
     nominal_current = jnp.asarray(maps["nominal_current"], dtype=jnp.float32)  # (3,)
-    phase_shifts = jnp.asarray((0.0, -2.0 * jnp.pi / 3.0, 2.0 * np.pi / 3.0), dtype=jnp.float32)
+    phase_shifts = jnp.asarray((0.0, -2.0 * np.pi / 3.0, 2.0 * np.pi / 3.0), dtype=jnp.float32)
     copper_fraction = jnp.asarray(materials["fractions"][2], dtype=jnp.float32)
     iron_fraction = jnp.asarray(materials["fractions"][1], dtype=jnp.float32)
     sigma = jnp.asarray(cfg.sigma_copper * jnp.maximum(copper_fraction, 1.0e-6), dtype=jnp.float32)
@@ -481,20 +510,108 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     cool = settings.cooling_coefficient
     spacing = cfg.spacing
 
-    def step(carry, _):
-        angle, omega, currents, temperature, prev_b = carry
-        elec = p * angle + comm
-        voltage = V * jnp.cos(elec + phase_shifts)
-        back_emf = sinusoidal_back_emf(angle, omega, p, psi)
-        circuit = advance_three_phase_rl(
-            ThreePhaseState(currents), voltage, back_emf, R, L, dt
+    # --- D4: explicit-Euler thermal stability limit ---
+    # 3-D diffusion: dt < dx^2 / (2*ndim*alpha_max), alpha = k / (rho*cp).
+    k_np = np.asarray(materials["thermal_conductivity"], dtype=np.float64)
+    c_np = np.asarray(materials["volumetric_heat_capacity"], dtype=np.float64)
+    alpha_max = float(np.max(k_np / np.maximum(c_np, 1.0e-9)))
+    dx_min = float(min(spacing))
+    dt_stable = dx_min ** 2 / (6.0 * max(alpha_max, 1e-12))
+    if dt > dt_stable:
+        raise ValueError(
+            f"thermal explicit-Euler unstable: dt={dt:.2e}s exceeds "
+            f"dt_stable={dt_stable:.2e}s (dx={dx_min:.2e}m, alpha_max={alpha_max:.2e}m2/s); "
+            "reduce dt or coarsen the grid"
         )
-        currents = circuit.currents
+
+    # --- B3: PI gains (bandwidth tuning, pole-zero cancellation ki/kp=R/L) ---
+    control_mode = settings.control_mode
+    if control_mode not in ("open_loop", "current_control"):
+        raise ValueError(f"unknown control_mode {control_mode!r}")
+    if control_mode == "current_control" and settings.commutation_offset != 0.0:
+        raise ValueError(
+            "current_control requires commutation_offset=0 (regulators act "
+            "in the rotor dq frame; use i_q_ref sign for direction)"
+        )
+    w_bw = 2.0 * np.pi * settings.current_bw_Hz
+    kp_ctrl = float(L * w_bw)
+    ki_ctrl = float(R * w_bw)
+    i_q_ref = float(settings.i_q_ref_A if settings.i_q_ref_A is not None else 0.0)
+    i_d_ref = float(settings.i_d_ref_A)
+    v_max = float(settings.voltage_limit_V if settings.voltage_limit_V is not None else V)
+    power_off_at = settings.power_off_at_s
+    alpha_R = settings.resistance_temp_coeff
+    R_ref_temp = settings.resistance_ref_temp_C
+    cu_weight = jnp.maximum(copper_fraction, 0.0)
+    cu_total = jnp.maximum(jnp.sum(cu_weight), 1e-12)
+
+    two_thirds = 2.0 / 3.0
+
+    def step(carry, idx):
+        angle, omega, currents, temperature, prev_b, v_d_int, v_q_int = carry
+        t = idx * dt
+        elec = p * angle + comm
+        # Physical power disconnection (B6): voltage zero after cutoff.
+        if power_off_at is None:
+            powered = 1.0
+        else:
+            powered = (t < power_off_at).astype(jnp.float32)
+
+        # --- winding resistance temperature feedback (B5) ---
+        T_cu = jnp.sum(temperature * cu_weight) / cu_total
+        R_t = R * (1.0 + alpha_R * (T_cu - R_ref_temp))
+
+        # Back-EMF is known analytically: use it as controller feedforward.
+        back_emf = sinusoidal_back_emf(angle, omega, p, psi)
+
+        # --- voltage source: PI current controller or open loop ---
+        if control_mode == "current_control":
+            # Axis convention (matches the FEA torque maps): the
+            # torque-producing current component is the electrical-cos
+            # axis, T1_p ~ cos(elec + s_p), so the "q" regulator drives
+            # i_cos and the "d" regulator nulls the sin axis.
+            cos_e = jnp.cos(elec + phase_shifts)
+            sin_e = jnp.sin(elec + phase_shifts)
+            # Axis projections (identity: (2/3)*sum cos^2 = (2/3)*sum sin^2
+            # = 1, cross = 0): a voltage v_q*cos_e + v_d*sin_e drives
+            # currents with cos-component v_q/R and sin-component v_d/R,
+            # so the measurements use the SAME signs as the synthesis.
+            i_q = two_thirds * jnp.sum(currents * cos_e)    # torque axis
+            i_d = two_thirds * jnp.sum(currents * sin_e)    # reactive axis
+            err_q = (i_q_ref - i_q) * powered
+            err_d = (i_d_ref - i_d) * powered
+            v_q_unsat = kp_ctrl * err_q + v_q_int
+            v_d_unsat = kp_ctrl * err_d + v_d_int
+            v_mag = jnp.sqrt(v_q_unsat ** 2 + v_d_unsat ** 2)
+            scale = jnp.minimum(1.0, v_max / jnp.maximum(v_mag, 1e-12))
+            v_q = v_q_unsat * scale
+            v_d = v_d_unsat * scale
+            # Conditional-integration anti-windup: freeze the integrator
+            # when saturated AND the error would push further into saturation.
+            wind_q = (v_mag <= v_max) | (err_q * v_q_unsat <= 0.0)
+            wind_d = (v_mag <= v_max) | (err_d * v_d_unsat <= 0.0)
+            v_q_int_new = powered * (v_q_int + ki_ctrl * err_q * dt * wind_q)
+            v_d_int_new = powered * (v_d_int + ki_ctrl * err_d * dt * wind_d)
+            # Phase voltages: PI correction + back-EMF feedforward
+            # (decoupling lets the regulators see a pure RL plant).
+            voltage = powered * (v_q * cos_e + v_d * sin_e + back_emf)
+        else:
+            voltage = V * powered * jnp.cos(elec + phase_shifts)
+            v_q_int_new = v_q_int
+            v_d_int_new = v_d_int
+
+        circuit = advance_three_phase_rl(
+            ThreePhaseState(currents), voltage, back_emf, R_t, L, dt
+        )
+        # Power-off = open contactor: force phase currents to zero (the
+        # spinning machine would otherwise generate into a short).
+        currents = powered * circuit.currents
         if i_lim is not None:
+            # Physical fault guard (not the control law): trip-level clamp.
             clamped = jnp.clip(currents, -i_lim, i_lim)
             currents = clamped - jnp.mean(clamped)
         # Per-phase current excitation: the commutation angle enters the
-        # electromagnetics through the ACTUAL phase currents against the
+        # electromechanics through the ACTUAL phase currents against the
         # per-phase torque maps, not through a projection wave that is
         # collinear with the voltage (and therefore offset-invariant at
         # standstill).
@@ -542,16 +659,23 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             angle, omega, currents, em_torque,
             jnp.sum(q_joule) * cell_volume, jnp.sum(q_iron) * cell_volume,
             jnp.max(temperature),
+            jnp.sum(voltage * currents),   # electrical input power [W] (B4)
+            # Consistent with the semi-implicit rotor integrator: the
+            # impulse acts on the post-update velocity, so work per step
+            # is em_torque * omega_{k+1} * dt exactly.
+            em_torque * omega,             # converted mechanical power [W]
         )
-        return (angle, omega, currents, temperature, mapped_b), outs
+        return (angle, omega, currents, temperature, mapped_b,
+                v_d_int_new, v_q_int_new), outs
 
     @jax.jit
     def run(initial_angle: jnp.ndarray):
         init = (
             initial_angle, jnp.asarray(0.0), jnp.zeros(3), temperature_init,
             _interp_uniform(b_map, initial_angle, period),
+            jnp.asarray(0.0), jnp.asarray(0.0),
         )
-        final, hist = jax.lax.scan(step, init, None, length=steps)
+        final, hist = jax.lax.scan(step, init, jnp.arange(steps), length=steps)
         return final[3], hist
 
     return run
@@ -569,9 +693,8 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         scan = _make_transient_scan(maps, settings, cfg)
         maps["_scan"] = scan
     temperature_final, hist = scan(jnp.asarray(float(initial_angle)))
-    angle_h, speed_h, currents_h, torque_h, joule_h, iron_h, maxt_h = (
-        np.asarray(x) for x in hist
-    )
+    (angle_h, speed_h, currents_h, torque_h, joule_h, iron_h, maxt_h,
+     elec_h, mech_h) = (np.asarray(x) for x in hist)
     steps = int(settings.steps)
     rotor_angle = np.concatenate([[initial_angle], angle_h])
     speed = np.concatenate([[0.0], speed_h])
@@ -585,6 +708,8 @@ def run_powered_transient(maps: dict, settings: Powered3DSettings,
         "transient_torque_Nm": torque_h,
         "transient_joule_power_W": joule_h,
         "transient_iron_power_W": iron_h,
+        "electrical_power_W": elec_h,        # sum(v*i) per step (B4)
+        "mechanical_power_W": mech_h,        # em_torque*omega per step (B4)
         "max_temperature_C": max_temperature,
         "temperature_final": np.asarray(temperature_final),
     }

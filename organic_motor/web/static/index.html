@@ -77,10 +77,18 @@
     <section class="panel" id="simPanel">
       <label>通电仿真</label>
       <div class="sim-params">
+        <label>控制模式
+          <select id="simControlMode">
+            <option value="open_loop">开环电压</option>
+            <option value="current_control" selected>电流闭环 PI</option>
+          </select>
+        </label>
+        <label id="simIqRefRow">q轴电流 [A] <input id="simIqRef" type="number" value="8" step="1" /></label>
         <label>电压 [V] <input id="simVoltage" type="number" value="24" step="1" /></label>
         <label>电流上限 [A] <input id="simCurrentLimit" type="number" value="50" step="5" /></label>
         <label>初始角 [°] <input id="simInitialAngle" type="number" value="0" step="15" /></label>
         <label>负载 [Nm] <input id="simLoadTorque" type="number" value="0.005" step="0.001" /></label>
+        <label>断电时刻 [ms] <input id="simPowerOff" type="number" value="" placeholder="不断电" step="10" /></label>
         <label>步数 <input id="simSteps" type="number" value="4000" step="500" /></label>
       </div>
       <div class="sim-controls">

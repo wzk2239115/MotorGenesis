@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 
@@ -122,11 +123,21 @@ def sinusoidal_back_emf(
     flux_linkage: Array | float,
     phase_offset: Array | float = 0.0,
 ) -> Array:
-    """Return sinusoidal phase back-EMF ``(a,b,c)``."""
+    """Return sinusoidal phase back-EMF ``(a,b,c)``.
+
+    Convention (verified against the torque maps): the PM flux linkage is
+    sin-aligned, ``lambda_p ~ sin(p*theta + s_p)``, so back-EMF is its
+    time derivative ``p*omega*psi*cos(p*theta + s_p)`` and the
+    torque-producing current component is the electrical-cos axis -- the
+    same axis on which the FEA torque maps T1_p ~ cos(p*theta + s_p)
+    produce their mean.  This makes ``sum(emf * i)`` equal the map-based
+    conversion ``T_em * omega`` for balanced currents (energy consistency,
+    audit item: back-EMF/torque-map phase agreement).
+    """
     electrical_angle = pole_pairs * mechanical_angle + phase_offset
     electrical_speed = pole_pairs * mechanical_angular_velocity
-    shifts = jnp.asarray([0.0, -2.0 * jnp.pi / 3.0, 2.0 * jnp.pi / 3.0])
-    return electrical_speed * flux_linkage * jnp.sin(
+    shifts = jnp.asarray([0.0, -2.0 * np.pi / 3.0, 2.0 * np.pi / 3.0])
+    return electrical_speed * flux_linkage * jnp.cos(
         electrical_angle[..., None] + shifts
     )
 
