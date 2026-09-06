@@ -54,7 +54,8 @@ def main():
         flux_linkage=electrical.flux_linkage,
         control_mode="current_control", i_q_ref_A=10.0,
     )
-    n_map_angles = 6
+    import sys
+    n_map_angles = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     elec_period = 2.0 * np.pi / cfg.pole_pairs
     angles_map = np.linspace(0, elec_period, n_map_angles, endpoint=False)
 
@@ -73,6 +74,8 @@ def main():
         phase_solver=phase_solver, include_mechanics=False,
         progress=progress,
     )
+    np.save(f"/tmp/opencode/t1_map_na{n_map_angles}.npy",
+            np.asarray(maps["torques_ph"]))
     t1_max = float(np.max(np.abs(np.asarray(maps["torques_ph"]))))
     t2_max = float(np.max(np.abs(np.asarray(maps["torque_i2_diag"]))))
     t0_max = float(np.max(np.abs(np.asarray(maps["torque_cogging"]))))

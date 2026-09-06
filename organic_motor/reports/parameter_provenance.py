@@ -46,9 +46,15 @@ PROVENANCE: tuple[ParameterProvenance, ...] = (
         "closed-loop integral of A_PM along winding centerlines over "
         "one electrical cycle, fundamental fit "
         "(transient_bridge.extract_fea_flux_linkage)",
-        "reversal/scaling linearity of the reference coil battery; "
-        "absolute value not yet vs external solver",
-        "estimate",
+        "INCONSISTENT with the torque maps (found 2026-09-06): FEA "
+        "extraction returns 0.1985 Wb while the T1 maps imply psi = "
+        "T1_amp/(1.5*p*I_nom) = 1.55e-4 Wb — a factor ~1274.  Physical "
+        "estimate (B~0.3 T, 28 series turns, kw=0.933) is ~0.004 Wb, so "
+        "BOTH ends are suspect (unit chain: per-turn vs per-coil vs "
+        "series-turns, map nominal-current normalization divides by "
+        "n_series).  Until reconciled the emf feedforward is wrong at "
+        "speed and the energy ledger flags it (21.5% at 322 rpm/1 s).",
+        "unverified (known inconsistent)",
     ),
     ParameterProvenance(
         "J_rotor", "rotor inertia", "kg m^2",
@@ -69,15 +75,13 @@ PROVENANCE: tuple[ParameterProvenance, ...] = (
         "T1/T0/T2 maps", "torque map decomposition", "N m",
         "FEA Maxwell stress",
         "zero/plus/minus current solves per angle on the realized fields "
-        "(compute_powered_maps)",
+        "(compute_powered_maps) — via artifact.solver_fields (density "
+        "direct) after the impostor-SDF fix",
         "reference-coil Biot-Savart battery for the underlying solver; "
         "map phase convention cross-checked vs back-EMF (cos axis); "
-        "QUALITY GATE active: at 96^3 the real-motor maps exceed the "
-        "physical bound (T1 up to 4935 Nm vs 1.5*p*psi*I_nom*x2.5 = 147) "
-        "at specific (phase, angle) alignments — phase-1 current at map "
-        "angles 2/3/6-of-6 — magnetostatic solve failures; transient "
-        "REFUSED until maps are fixed (finer grid / more iterations)",
-        "unverified (gate active)",
+        "gate PASSED on the real 96^3 motor after the fix: T1_max=0.046 "
+        "Nm vs bound 1.709, three phases symmetric",
+        "estimate",
     ),
     ParameterProvenance(
         "back-EMF", "sinusoidal phase EMF", "V",
