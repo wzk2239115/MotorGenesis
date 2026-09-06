@@ -85,6 +85,9 @@ class Powered3DSettings:
     # --- D3: PM temperature feedback (NdFeB remanence coefficient) ---
     pm_temp_coeff: float = -0.0012  # dB/dT ~ -0.12 %/K
     pm_temp_ref_C: float = 20.0
+    # --- over-EMF protection: open the contactor after this many
+    # consecutive steps of total-voltage saturation (0 = disabled) ---
+    overemf_trip_steps: int = 500
     # --- D2: aerodynamic rotor load (windage) ---
     include_windage: bool = False
     windage_rotor_radius_m: float | None = None  # default R_sleeve_outer
@@ -563,6 +566,12 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
 
     # --- D2: windage torque coefficients (constant per geometry) ---
     include_windage = settings.include_windage
+    # --- over-EMF trip: sustained total-voltage saturation opens the
+    # contactor (real inverter protection; also bounds the known
+    # reduced-order artifact where phase-lagged currents let the
+    # angle-only torque maps extract unbounded energy above the bus) ---
+    trip_steps = int(settings.overemf_trip_steps)
+    trip_enabled = trip_steps > 0
     if include_windage:
         r_w = float(settings.windage_rotor_radius_m
                     if settings.windage_rotor_radius_m is not None
@@ -598,7 +607,8 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
     two_thirds = 2.0 / 3.0
 
     def step(carry, idx):
-        angle, omega, currents, temperature, prev_b, v_d_int, v_q_int = carry
+        (angle, omega, currents, temperature, prev_b, v_d_int, v_q_int,
+         trip_cnt) = carry
         t = idx * dt
         elec = p * angle + comm
         # Physical power disconnection (B6): voltage zero after cutoff.
@@ -606,6 +616,9 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             powered = 1.0
         else:
             powered = (t < power_off_at).astype(jnp.float32)
+        # Over-EMF latch: once tripped the contactor stays open.
+        if trip_enabled:
+            powered = powered * (trip_cnt < float(trip_steps))
 
         # --- winding resistance temperature feedback (B5) ---
         T_cu = jnp.sum(temperature * cu_weight) / cu_total
@@ -637,25 +650,40 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             i_d = two_thirds * jnp.sum(currents * sin_e)    # reactive axis
             err_q = (i_q_ref - i_q) * powered
             err_d = (i_d_ref - i_d) * powered
-            v_q_unsat = kp_ctrl * err_q + v_q_int
-            v_d_unsat = kp_ctrl * err_d + v_d_int
-            v_mag = jnp.sqrt(v_q_unsat ** 2 + v_d_unsat ** 2)
+            v_q_pi = kp_ctrl * err_q + v_q_int
+            v_d_pi = kp_ctrl * err_d + v_d_int
+            # Back-EMF feedforward lives on the q axis (cos component
+            # p*omega*psi).  The INVERTER limit applies to the TOTAL
+            # voltage (PI + feedforward): an average-model inverter
+            # cannot synthesise more than the bus, so saturate the sum.
+            emf_q = p * omega * psi_t
+            v_q_tot = v_q_pi + emf_q
+            v_d_tot = v_d_pi
+            v_mag = jnp.sqrt(v_q_tot ** 2 + v_d_tot ** 2)
             scale = jnp.minimum(1.0, v_max / jnp.maximum(v_mag, 1e-12))
-            v_q = v_q_unsat * scale
-            v_d = v_d_unsat * scale
+            v_q = v_q_tot * scale
+            v_d = v_d_tot * scale
             # Conditional-integration anti-windup: freeze the integrator
-            # when saturated AND the error would push further into saturation.
-            wind_q = (v_mag <= v_max) | (err_q * v_q_unsat <= 0.0)
-            wind_d = (v_mag <= v_max) | (err_d * v_d_unsat <= 0.0)
+            # when the TOTAL voltage saturates AND the PI error would
+            # push further into saturation.
+            wind_q = (v_mag <= v_max) | (err_q * v_q_pi <= 0.0)
+            wind_d = (v_mag <= v_max) | (err_d * v_d_pi <= 0.0)
             v_q_int_new = powered * (v_q_int + ki_ctrl * err_q * dt * wind_q)
             v_d_int_new = powered * (v_d_int + ki_ctrl * err_d * dt * wind_d)
-            # Phase voltages: PI correction + back-EMF feedforward
-            # (decoupling lets the regulators see a pure RL plant).
-            voltage = powered * (v_q * cos_e + v_d * sin_e + back_emf)
+            # Phase voltages whose cos/sin components are v_q/v_d.
+            voltage = powered * (v_q * cos_e + v_d * sin_e)
+            # Over-EMF latch: monotone counter, never resets — once the
+            # contactor opens it stays open for the whole run.
+            if trip_enabled:
+                saturated = (v_mag > v_max).astype(jnp.float32)
+                trip_cnt_new = trip_cnt + saturated
+            else:
+                trip_cnt_new = trip_cnt
         else:
             voltage = V * powered * jnp.cos(elec + phase_shifts)
             v_q_int_new = v_q_int
             v_d_int_new = v_d_int
+            trip_cnt_new = trip_cnt
 
         circuit = advance_three_phase_rl(
             ThreePhaseState(currents), voltage, back_emf, R_t, L, dt
@@ -727,14 +755,14 @@ def _make_transient_scan(maps: dict, settings: Powered3DSettings, cfg: MotorConf
             em_torque * omega,             # converted mechanical power [W]
         )
         return (angle, omega, currents, temperature, mapped_b,
-                v_d_int_new, v_q_int_new), outs
+                v_d_int_new, v_q_int_new, trip_cnt_new), outs
 
     @jax.jit
     def run(initial_angle: jnp.ndarray):
         init = (
             initial_angle, jnp.asarray(0.0), jnp.zeros(3), temperature_init,
             _interp_uniform(b_map, initial_angle, period),
-            jnp.asarray(0.0), jnp.asarray(0.0),
+            jnp.asarray(0.0), jnp.asarray(0.0), jnp.asarray(0.0),
         )
         final, hist = jax.lax.scan(step, init, jnp.arange(steps), length=steps)
         return final[3], hist

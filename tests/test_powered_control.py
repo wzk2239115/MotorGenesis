@@ -125,9 +125,9 @@ class TestPICurrentControl:
         maps_hi = _synthetic_maps(cfg)
         maps_lo = _synthetic_maps(cfg)
         s_hi = _base_settings(control_mode="current_control", i_q_ref_A=40.0,
-                              voltage_limit_V=1.0e9)
+                              voltage_limit_V=1.0e9, overemf_trip_steps=0)
         s_lo = _base_settings(control_mode="current_control", i_q_ref_A=40.0,
-                              voltage_limit_V=1.0)
+                              voltage_limit_V=1.0, overemf_trip_steps=0)
         run_powered_transient(maps_hi, s_hi, cfg, 0.0)  # compile
         iq_hi_all = []
         for maps_x, s_x in ((maps_hi, s_hi), (maps_lo, s_lo)):
@@ -141,6 +141,37 @@ class TestPICurrentControl:
         )
         # 1 V across R=0.1 Ω (back-emf near zero at stall-ish speed) bounds i.
         assert iq_lo < 15.0, f"saturated i_q={iq_lo:.2f} exceeds 1V/0.1Ω bound"
+
+    def test_bus_voltage_limits_speed(self, cfg):
+        """Total-voltage saturation: at speed the back-EMF bounds the
+        operating point, p*omega*psi cannot exceed v_max by much."""
+        maps = _synthetic_maps(cfg)
+        s = _base_settings(
+            control_mode="current_control", i_q_ref_A=10.0,
+            voltage_limit_V=2.0, load_torque=0.0, load_viscous=5.0e-3,
+            steps=8000, overemf_trip_steps=0,
+        )
+        d = run_powered_transient(maps, s, cfg, 0.0)
+        w_end = abs(d["angular_velocity_rad_s"][-1])
+        ceiling = s.voltage_limit_V / (cfg.pole_pairs * FLUX)
+        assert w_end < 1.15 * ceiling, (
+            f"final speed {w_end:.1f} rad/s exceeds emf ceiling "
+            f"{ceiling:.1f} rad/s — inverter generated voltage from nothing"
+        )
+
+    def test_overemf_trip_opens_contactor(self, cfg):
+        """Sustained voltage saturation must latch the contactor open."""
+        maps = _synthetic_maps(cfg)
+        # flux bumped so the emf ceiling is low and quickly saturated
+        s = _base_settings(
+            control_mode="current_control", i_q_ref_A=10.0,
+            voltage_limit_V=0.5, load_torque=0.0, load_viscous=2.0e-3,
+            steps=6000, overemf_trip_steps=200,
+        )
+        d = run_powered_transient(maps, s, cfg, 0.0)
+        cur = d["currents_A"]
+        # after the trip window (200 steps) + margin, currents are zero
+        assert np.max(np.abs(cur[1000:])) < 1e-6
 
     def test_comm_must_be_zero_in_current_control(self, cfg):
         maps = _synthetic_maps(cfg)
@@ -282,7 +313,8 @@ class TestResistanceTempFeedback:
         maps_hot = _synthetic_maps(cfg)
         maps_hot["temperature_init"] = np.full(cfg.shape, 200.0, dtype=np.float32)
         s = dict(control_mode="current_control", i_q_ref_A=50.0,
-                 voltage_limit_V=1.0, rotor_inertia=1.0, steps=6000)
+                 voltage_limit_V=1.0, rotor_inertia=1.0, steps=6000,
+                 overemf_trip_steps=0)
         d_cold = run_powered_transient(maps_cold, _base_settings(**s), cfg, 0.0)
         d_hot = run_powered_transient(maps_hot, _base_settings(**s), cfg, 0.0)
         # Steady state: i ~ V/R; hot R is ~1.7x cold R at 200 vs 25 degC.
