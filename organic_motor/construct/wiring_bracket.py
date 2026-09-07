@@ -172,9 +172,9 @@ def build_clamp_assets():
         clamps[name] = cable_clamp(z_level, r_bridge, angle)
         clamp_list.append(dict(
             name=name, phase=phase_label, bridge_idx=bridge_idx,
-            r_mm=r_bridge, z_mm=z_level, angle_rad=float(angle),
-            position_mm=[r_bridge * np.cos(angle),
-                         r_bridge * np.sin(angle), z_level]))
+            r_mm=float(r_bridge), z_mm=float(z_level), angle_rad=float(angle),
+            position_mm=[float(r_bridge * np.cos(angle)),
+                         float(r_bridge * np.sin(angle)), float(z_level)]))
     return clamps, clamp_list
 
 
