@@ -1,8 +1,18 @@
 """Explicit manufacturing-candidate routes, separate from simulation runs."""
+import json
 from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from organic_motor.construct.casting_material import material_template, validate_material
+
+
+def _read_hash(output):
+    """Read design_hash from manifest, or empty string if unavailable."""
+    try:
+        m=json.loads((Path(output)/'manifest.json').read_text())
+        return m.get('design_hash','')
+    except Exception:
+        return ''
 
 
 def install(app, root):
@@ -22,9 +32,12 @@ def install(app, root):
 
     @app.get('/api/prototype/{filename}')
     def artifact(filename: str):
-        if filename not in {'assembly.glb','molds.glb','manifest.json','manufacturing-kit.zip','winding_route_mm.csv','assembly-audit.json','shape-screen.json','wiring.json'}:
+        allowed={'assembly.glb','molds.glb','manifest.json','manufacturing-kit.zip',
+                 'winding_route_mm.csv','assembly-audit.json','shape-screen.json','wiring.json'}
+        if filename not in allowed:
             raise HTTPException(404,'未知制造文件')
         path=output/filename
         if not path.is_file():
             raise HTTPException(404,'先运行 python -m organic_motor.construct.wound_prototype --out '+str(output))
-        return FileResponse(path,headers={'Cache-Control':'no-cache'})
+        return FileResponse(path,headers={'Cache-Control':'no-cache',
+            'X-Design-Hash':_read_hash(output)})

@@ -1,6 +1,6 @@
 {
   "method": "assembled exported STL solid Boolean intersection",
-  "design_hash": "c2e26df29577ead9",
+  "design_hash": "7530c8023c118741",
   "instances": 117,
   "broad_phase_candidates": 462,
   "threshold_mm3": 0.02,

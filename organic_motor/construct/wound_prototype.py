@@ -292,7 +292,9 @@ def build(spec=None,card=None):
     harness['em_verification']=em_verification_chain(harness,spec,MotorConfig().sigma_copper)
     for phase,path in phase_paths.items():
         assets['phase_'+phase]=sweep_tube(path,spec.wire_diameter_mm/2+spec.enamel_radial_mm)
-    harness['support_status']='后侧分层引线的固定夹具与端子座尚未落实；不能直接投产'
+    harness['support_status']='后侧分层引线夹与端子座已生成；FDM 公差、端子采购型号与绝缘耐压待确认'
+    # High-density phase routes go ONLY in wiring.json (loaded on demand),
+    # not in manifest.json which is fetched on every page load.
     harness['phase_routes_mm']={k:v.tolist() for k,v in phase_paths.items()}
     def add(id,asset,label,process,position=(0,0,0),angle=0,group='stator',explode=(0,0,0)):
         transform=rotation(angle);transform[:3,3]=position
@@ -491,12 +493,26 @@ def build(spec=None,card=None):
 
 
 def export(out, spec=None, card=None):
-    out=Path(out);out.mkdir(parents=True,exist_ok=True)
+    """Generate manufacturing kit with atomic (versioned) publish.
+
+    All files are written to a staging directory first.  After all files
+    are complete and self-consistent (same design hash), the staging
+    directory atomically replaces the live directory.  This prevents
+    browsers from reading half-written files during a rebuild.
+    """
+    import os, shutil, tempfile
+    out=Path(out)
+    # Stage to a sibling directory with a unique suffix
+    staging=out.parent/(out.name+'.staging')
+    if staging.exists():shutil.rmtree(staging)
+    staging.mkdir(parents=True,exist_ok=True)
     assets,report,route=build(spec,card)
     scene=trimesh.Scene()
     colors={'core_segment':[95,120,137,255],'grooved_bobbin':[225,220,191,255],'winding':[208,107,42,255],'phase_U':[214,71,51,255],'phase_V':[217,165,31,255],'phase_W':[49,110,218,255],
         'honeycomb_housing':[44,123,115,255],'helical_tube':[61,165,198,255], 'sun':[217,159,66,255],
-        'planet':[179,189,199,255],'ring':[76,101,117,255],'carrier':[206,136,76,255]}
+        'planet':[179,189,199,255],'ring':[76,101,117,255],'carrier':[206,136,76,255],
+        'harness_bracket_base':[180,140,90,255],'terminal_U':[214,71,51,255],'terminal_V':[217,165,31,255],
+        'terminal_W':[49,110,218,255],'terminal_N':[120,120,120,255]}
     used={i['asset'] for i in report['instances']}
     for name in used:
         m=assets[name].copy();m.apply_scale(.001)
@@ -504,37 +520,57 @@ def export(out, spec=None, card=None):
     for inst in report['instances']:
         transform=np.array(inst['transform']);transform[:3,3]*=.001
         scene.graph.update(frame_to=inst['id'],matrix=transform,geometry=inst['asset'])
-    (out/'assembly.glb').write_bytes(scene.export(file_type='glb'))
+    (staging/'assembly.glb').write_bytes(scene.export(file_type='glb'))
     moldscene=trimesh.Scene()
     for name in ('segment_mold_lower','segment_mold_upper'):
         m=assets[name].copy();m.apply_translation([-40.5,0,12 if name.endswith('upper') else -12]);m.apply_scale(.001)
         m.visual.face_colors=[109,165,156,255]
         moldscene.add_geometry(m,node_name=name)
-    (out/'molds.glb').write_bytes(moldscene.export(file_type='glb'))
+    (staging/'molds.glb').write_bytes(moldscene.export(file_type='glb'))
     for name,m in assets.items():
         if not m.is_watertight or m.body_count!=1 or m.volume<=0:
             raise ValueError(f'{name}: 零件须为单个闭合、正体积连通体')
-    report['assets']={n:dict(size_mm=np.round(m.extents,3).tolist(),watertight=m.is_watertight,components=m.body_count,mesh_sha256=hashlib.sha256(np.asarray(m.vertices,np.float32).tobytes()+np.asarray(m.faces,np.uint32).tobytes()).hexdigest()) for n,m in assets.items()}
+    report['assets']={n:dict(size_mm=np.round(m.extents,3).tolist(),watertight=bool(m.is_watertight),components=int(m.body_count),mesh_sha256=hashlib.sha256(np.asarray(m.vertices,np.float32).tobytes()+np.asarray(m.faces,np.uint32).tobytes()).hexdigest()) for n,m in assets.items()}
     counts=Counter(i['asset'] for i in report['instances'])
     for name in ('segment_mold_lower','segment_mold_upper'):counts[name]=1
-    report['bill_of_materials']=[dict(asset=name,quantity=counts[name],process=next((i['process'] for i in report['instances'] if i['asset']==name),'FDM 工装')) for name in assets]
-    with (out/'bill_of_materials.csv').open('w',newline='',encoding='utf-8-sig') as f:
+    report['bill_of_materials']=[dict(asset=name,quantity=int(counts[name]),process=next((i['process'] for i in report['instances'] if i['asset']==name),'FDM 工装')) for name in assets]
+    with (staging/'bill_of_materials.csv').open('w',newline='',encoding='utf-8-sig') as f:
         writer=csv.DictWriter(f,fieldnames=['asset','quantity','process']);writer.writeheader();writer.writerows(report['bill_of_materials'])
     report['generator_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     report['wiring_source_sha256']=hashlib.sha256((Path(__file__).parent/'winding_harness.py').read_bytes()+(Path(__file__).parents[1]/'topology'/'winding_assignment.py').read_bytes()+(Path(__file__).parent/'wiring_bracket.py').read_bytes()).hexdigest()
     report['design_hash']=hashlib.sha256(json.dumps(report,sort_keys=True).encode()).hexdigest()[:16]
-    (out/'wiring.json').write_text(json.dumps(report['winding_harness'],ensure_ascii=False,indent=2))
-    (out/'manifest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
-    np.savetxt(out/'winding_route_mm.csv',route,delimiter=',',header='x_mm,y_mm,z_mm',comments='')
-    with zipfile.ZipFile(out/'manufacturing-kit.zip','w',zipfile.ZIP_DEFLATED) as z:
+    (staging/'wiring.json').write_text(json.dumps(report['winding_harness'],ensure_ascii=False,indent=2))
+    # Manifest excludes high-density phase_routes_mm (loaded on demand from wiring.json)
+    manifest_report=dict(report)
+    manifest_report['winding_harness']=dict(report['winding_harness'])
+    manifest_report['winding_harness'].pop('phase_routes_mm',None)
+    (staging/'manifest.json').write_text(json.dumps(manifest_report,ensure_ascii=False,indent=2))
+    np.savetxt(staging/'winding_route_mm.csv',route,delimiter=',',header='x_mm,y_mm,z_mm',comments='')
+    with zipfile.ZipFile(staging/'manufacturing-kit.zip','w',zipfile.ZIP_DEFLATED) as z:
         for n,m in assets.items():z.writestr('parts/'+n+'_mm.stl',m.export(file_type='stl'))
         doc=Path(__file__).resolve().parents[2]/'docs'/'WOUND_PROTOTYPE.md'
         if doc.is_file():z.write(doc,'制造与材料实测指南.md')
-        z.write(out/'bill_of_materials.csv','bill_of_materials.csv')
-        z.write(out/'wiring.json','wiring.json')
-        z.write(out/'manifest.json','manifest.json');z.write(out/'winding_route_mm.csv','winding_route_mm.csv')
+        z.write(staging/'bill_of_materials.csv','bill_of_materials.csv')
+        z.write(staging/'wiring.json','wiring.json')
+        z.write(staging/'manifest.json','manifest.json');z.write(staging/'winding_route_mm.csv','winding_route_mm.csv')
         z.writestr('material_card.template.json',json.dumps(material_template(),ensure_ascii=False,indent=2))
         z.writestr('装配说明.md', '# 分段绕线原型\n\n这是新制造候选，不能使用旧电机的性能报告。所有 STL 单位 mm。\n\n'+ '\n'.join(report['winding']['instructions'])+'\n\n磁芯、骨架各 12 件；绕组共 12 组、按三相各四组串联，详见 wiring.json；太阳轮 1、行星轮 3、内齿圈 1、行星架 1、轴销 3。模具只需一套，可重复浇注 12 段。\n\n先测材料与收缩，再重建模具。默认零收缩代表未补偿，并非材料不收缩。丝径含漆膜。齿轮目前是配合/运动学样件，不是额定载荷认证。\n')
+    # Verify staging directory is complete before atomic publish
+    required={'assembly.glb','molds.glb','manifest.json','wiring.json',
+             'winding_route_mm.csv','manufacturing-kit.zip','bill_of_materials.csv'}
+    missing=required-{p.name for p in staging.iterdir()}
+    if missing:raise ValueError(f'暂存目录缺少文件: {missing}')
+    # Verify manifest design hash is consistent
+    staged_manifest=json.loads((staging/'manifest.json').read_text())
+    assert staged_manifest['design_hash']==report['design_hash']
+    # Atomic publish: rename old, move new, remove old
+    out.mkdir(parents=True,exist_ok=True)
+    backup=out.parent/(out.name+'.previous')
+    if backup.exists():shutil.rmtree(backup)
+    if out.exists():
+        os.rename(out,backup)
+    os.rename(staging,out)
+    if backup.exists():shutil.rmtree(backup)
     return report
 
 

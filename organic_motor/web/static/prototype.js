@@ -25,7 +25,10 @@ function update(){if(!root)return;const p=Number($('progress').value),gear=['sun
  if(['planet','carrier_pin'].includes(inst.group)){n.position.applyAxisAngle(new THREE.Vector3(0,0,1),c);n.rotateZ(inst.group==='planet'?spin:c);}
  if(inst.group==='carrier')n.rotateZ(c);}
  }
- if(routeLine){routeLine.visible=['winding','insertion'].includes(mode);marker.visible=mode==='winding';const count=routeLine.geometry.attributes.position.count,index=Math.min(count-1,Math.floor((mode==='insertion'?1:p)*(count-1)));routeLine.geometry.setDrawRange(0,index+1);marker.position.fromBufferAttribute(routeLine.geometry.attributes.position,index);}
+ if(routeLine){routeLine.visible=['winding','insertion'].includes(mode);marker.visible=mode==='winding';const count=routeLine.geometry.attributes.position.count;const p=Number($('progress').value);let index;
+ if(typeof cumLen!=='undefined'&&mode==='winding'){const targetLen=p*totalLen;index=Math.min(count-1,cumLen.findIndex(l=>l>=targetLen));if(index<0)index=count-1;}
+ else{index=Math.min(count-1,Math.floor((mode==='insertion'?1:p)*(count-1)));}
+ routeLine.geometry.setDrawRange(0,index+1);marker.position.fromBufferAttribute(routeLine.geometry.attributes.position,index);}
  terminalLabels.forEach(label=>label.visible=mode==='wiring');
  $('sceneStatus').textContent=mode==='gearbox'?`输入 ${(p*1440).toFixed(0)}° → 输出 ${(p*1440/manifest.gearbox.ratio).toFixed(0)}° · 运动学演示`:`${manifest.design_hash} · 新制造候选 / 未通过性能验证`;
 }
@@ -33,11 +36,15 @@ document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>select(b.datas
 $('materialFile').onchange=async e=>{try{const card=JSON.parse(await e.target.files[0].text());const response=await fetch('/api/prototype/material-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(card)});const result=await response.json();if(!response.ok)throw Error(result.detail);$('materialResult').textContent=result.material_data_complete?'材料字段完整；仍需求解器接入与校准。使用 CLI --material 重建模具后才生效。':'待补充：\n'+result.missing.join('\n');}catch(err){$('materialResult').textContent='导入失败：'+err.message;}};
 try{const response=await fetch('/api/prototype/manifest.json');if(!response.ok)throw Error('尚未生成制造候选，请运行 python -m organic_motor.construct.wound_prototype');manifest=await response.json();root=(await new GLTFLoader().loadAsync('/api/prototype/assembly.glb')).scene;scene.add(root);manifest.instances.forEach(i=>nodes.set(i.id,root.getObjectByName(i.id)));molds=(await new GLTFLoader().loadAsync('/api/prototype/molds.glb')).scene;scene.add(molds);
  const csv=await(await fetch('/api/prototype/winding_route_mm.csv')).text();const pts=csv.trim().split('\n').slice(1).map(row=>new THREE.Vector3(...row.split(',').map(v=>Number(v)*.001)));routeLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0xc36b31}));scene.add(routeLine);marker=new THREE.Mesh(new THREE.SphereGeometry(.0009,12,8),new THREE.MeshStandardMaterial({color:0xe47529}));scene.add(marker);
+ const segLens=pts.slice(1).map((p,i)=>p.distanceTo(pts[i]));const cumLen=[0];segLens.forEach(l=>cumLen.push(cumLen[cumLen.length-1]+l));const totalLen=cumLen[cumLen.length-1];
  $('numbers').textContent=`${manifest.spec.segments} 段 / R${manifest.spec.end_radius_mm} mm / ${manifest.spec.turns} 匝 / 铜线 Ø${manifest.spec.wire_diameter_mm} mm / 4:1 行星级`;
  $('materialResult').textContent=manifest.mold.shrinkage_measured?`当前模具补偿：${manifest.mold.shrink_xyz.map(v=>(v*100).toFixed(2)+'%').join(' / ')}；材料缺项 ${manifest.material_status.missing.length} 项。`:'当前模具未补偿收缩，材料数据待实测。';
- descriptions.winding[1]=`${manifest.spec.turns} 匝，单段槽内线长 ${(manifest.winding.route_length_mm/1000).toFixed(2)} m；完整引线长度见三相接线表。导槽与导线共享路径，先绕骨架再装磁芯。`;
+ descriptions.wiring[1]=`${manifest.spec.turns} 匝，单段槽内线长 ${(manifest.winding.route_length_mm/1000).toFixed(2)} m；完整引线长度见三相接线表。导槽与导线共享路径，先绕骨架再装磁芯。`;
  const h=manifest.winding_harness;
  if(h){$('wiringTable').textContent=h.phase_chains.map(c=>`${c.phase} → ${c.coils.map(e=>e.input_terminal+' → '+e.output_terminal).join(' → ')} → N\n线长 ${(c.route_length_mm/1000).toFixed(2)} m`).join('\n\n')+'\n\nS→F 为正绕向，F→S 为反接。三相不能全部串成一相。';
+ const emv=h.em_verification;
+ if(emv){const R=emv.resistance;const ph=R.per_phase;const sym=emv.symbol_checks;
+ $('emResult').textContent=`U/V/W 电阻：${(ph.U?.resistance_ohm||0).toFixed(3)} / ${(ph.V?.resistance_ohm||0).toFixed(3)} / ${(ph.W?.resistance_ohm||0).toFixed(3)} Ω\n不平衡度：${R.imbalance_percent.toFixed(2)}%\n符号检查：平衡 ${sym.three_phase_balanced?'✓':'✗'} · 120° ${sym.phase_sequence_120deg?'✓':'✗'} · 旋向反转 ${sym.rotation_reversal_verified?'✓':'✗'}\n求解器网格：${emv.verification_chain.solver_mesh}\n转矩：${emv.verification_chain.torque}`;}
  for(const [name,position] of Object.entries({...h.terminals_mm,N:h.star_point_mm})){const canvas=document.createElement('canvas');canvas.width=128;canvas.height=64;const ctx=canvas.getContext('2d');ctx.fillStyle='#20352e';ctx.fillRect(0,0,128,64);ctx.fillStyle='white';ctx.font='bold 44px sans-serif';ctx.textAlign='center';ctx.fillText(name,64,48);const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),depthTest:false}));sprite.position.set(...position.map(v=>v*.001));sprite.position.z-=.006;sprite.scale.set(.012,.006,1);scene.add(sprite);terminalLabels.push(sprite);}}
  select('wiring');
  try{const response=await fetch('/api/prototype/assembly-audit.json');if(!response.ok)throw Error('尚无本版本检查结果');const audit=await response.json();if(audit.design_hash!==manifest.design_hash)throw Error('检查结果属于旧版本，需重新运行审查');$('auditResult').textContent=`静态实体干涉：${audit.collisions.length} 对\n螺孔 / 孔壁 / 套筒通道：${audit.fasteners?.pass_check?'通过':'未通过或未完成'}\n不包含打印公差与承载认证。`;}catch(e){$('auditResult').textContent=e.message;}

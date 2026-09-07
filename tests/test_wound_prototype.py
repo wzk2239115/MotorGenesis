@@ -168,3 +168,29 @@ def test_bracket_mounts_on_extended_tie_rods_and_passes_audit():
     result=audit(assets,report)
     assert result['static_interference_pass']
     assert len(result['intended_electrical_contacts'])>=9  # 3 N-node + 3 terminal + 3 clamp
+
+
+def test_atomic_publish_and_version_consistency(tmp_path):
+    """Export writes to staging dir, then atomically replaces live dir."""
+    import json, os
+    from organic_motor.construct.wound_prototype import export, WoundSpec
+    out=tmp_path/'wound_prototype'
+    report=export(str(out),WoundSpec())
+    # All required files exist
+    required={'assembly.glb','molds.glb','manifest.json','wiring.json',
+             'winding_route_mm.csv','manufacturing-kit.zip','bill_of_materials.csv'}
+    assert required<={p.name for p in out.iterdir()}
+    # No staging directory left behind
+    assert not (out.parent/'wound_prototype.staging').exists()
+    # Manifest design_hash matches report
+    manifest=json.loads((out/'manifest.json').read_text())
+    assert manifest['design_hash']==report['design_hash']
+    # Manifest does NOT contain high-density phase_routes_mm
+    assert 'phase_routes_mm' not in manifest.get('winding_harness',{})
+    # Wiring.json DOES contain phase_routes_mm
+    wiring=json.loads((out/'wiring.json').read_text())
+    assert 'phase_routes_mm' in wiring
+    # EM verification present in manifest
+    assert 'em_verification' in manifest['winding_harness']
+    assert not manifest['winding_harness']['em_verification']['simulation_ready']
+    assert not manifest['winding_harness']['em_verification']['old_model_fallback']
