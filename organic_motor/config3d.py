@@ -42,16 +42,12 @@ class MotorSpec:
         return self.pole_pairs
 
     def phase_of_slot(self, slot: int) -> int:
-        """12s10p phase assignment: A C B A C B A C B A C B."""
-        # Standard 12s10p: slots 0,3,6,9 = phase A; 1,4,7,10 = C; 2,5,8,11 = B
-        return [0, 2, 1][slot % 3]
+        from organic_motor.topology.winding_assignment import tooth_phase_polarity
+        return tooth_phase_polarity(slot,self.n_slots,self.pole_pairs)[0]
 
     def polarity_of_slot(self, slot: int) -> int:
-        """Alternating polarity within each phase."""
-        phase = self.phase_of_slot(slot)
-        # Count how many previous slots of the same phase
-        count = sum(1 for s in range(slot) if self.phase_of_slot(s) == phase)
-        return 1 if count % 2 == 0 else -1
+        from organic_motor.topology.winding_assignment import tooth_phase_polarity
+        return tooth_phase_polarity(slot,self.n_slots,self.pole_pairs)[1]
 
 
 # Singleton instance — import this everywhere

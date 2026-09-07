@@ -1,0 +1,150 @@
+{
+  "search": "bounded end-radius sweep, equal turns/wire/current; no aesthetics reward in loss objective",
+  "candidates": [
+    {
+      "end_radius_mm": 1.2,
+      "total_wire_length_m": 1.0166597496173677,
+      "resistance_ohm": 0.06199479869508535,
+      "copper_loss_W": 0.5579531882557681,
+      "current_A": 3.0,
+      "sigma_S_m": 58000000.0
+    },
+    {
+      "end_radius_mm": 2.0,
+      "total_wire_length_m": 1.0056846640909625,
+      "resistance_ohm": 0.06132554999302262,
+      "copper_loss_W": 0.5519299499372036,
+      "current_A": 3.0,
+      "sigma_S_m": 58000000.0
+    },
+    {
+      "end_radius_mm": 3.0,
+      "total_wire_length_m": 0.9919555384721749,
+      "resistance_ohm": 0.06048836294070093,
+      "copper_loss_W": 0.5443952664663084,
+      "current_A": 3.0,
+      "sigma_S_m": 58000000.0
+    },
+    {
+      "end_radius_mm": 4.0,
+      "total_wire_length_m": 0.9782223276992982,
+      "resistance_ohm": 0.059650926780154497,
+      "copper_loss_W": 0.5368583410213905,
+      "current_A": 3.0,
+      "sigma_S_m": 58000000.0
+    },
+    {
+      "end_radius_mm": 5.0,
+      "total_wire_length_m": 0.9644843035662585,
+      "resistance_ohm": 0.058813197106174026,
+      "copper_loss_W": 0.5293187739555663,
+      "current_A": 3.0,
+      "sigma_S_m": 58000000.0
+    }
+  ],
+  "selected": {
+    "end_radius_mm": 5.0,
+    "total_wire_length_m": 0.9644843035662585,
+    "resistance_ohm": 0.058813197106174026,
+    "copper_loss_W": 0.5293187739555663,
+    "current_A": 3.0,
+    "sigma_S_m": 58000000.0
+  },
+  "selected_spec": {
+    "end_radius_mm": 5.0,
+    "segments": 12,
+    "turns": 8,
+    "wire_diameter_mm": 0.6,
+    "enamel_radial_mm": 0.035,
+    "turn_pitch_mm": 1.2,
+    "clearance_mm": 0.3,
+    "draft_deg": 1.0,
+    "geometry_step_mm": 0.45,
+    "gear_module_mm": 1.5,
+    "sun_teeth": 18,
+    "planet_teeth": 18,
+    "planets": 3,
+    "gear_backlash_mm": 0.16,
+    "shaft_radius_mm": 8.0
+  },
+  "generator_sha256": "db4e5ddb3f88f0c720348604e19658a525c2606ddf7b14fe4e5e7939bcd1ea56",
+  "copper_loss_reduction_percent": 5.132046003665048,
+  "thermal": [
+    {
+      "end_radius_mm": 1.2,
+      "step_mm": 1.2,
+      "shape": [
+        22,
+        18,
+        50
+      ],
+      "peak_temperature_C": 29.080041932041645,
+      "relative_residual": 9.172459380556853e-10,
+      "heat_input_W": 0.4701435644809293,
+      "integrated_heat_W": 0.47014356448092925,
+      "integrated_copper_m3": 2.4221483784215946e-07,
+      "conductor_copper_m3": 2.422148378421594e-07
+    },
+    {
+      "end_radius_mm": 5.0,
+      "step_mm": 1.2,
+      "shape": [
+        22,
+        18,
+        50
+      ],
+      "peak_temperature_C": 29.188807941473907,
+      "relative_residual": 9.75741211662957e-10,
+      "heat_input_W": 0.4415091501807274,
+      "integrated_heat_W": 0.44150915018072745,
+      "integrated_copper_m3": 2.274625780210852e-07,
+      "conductor_copper_m3": 2.2746257802108523e-07
+    },
+    {
+      "end_radius_mm": 1.2,
+      "step_mm": 0.8,
+      "shape": [
+        33,
+        26,
+        74
+      ],
+      "peak_temperature_C": 31.365041802673666,
+      "relative_residual": 9.675421125048696e-10,
+      "heat_input_W": 0.4701435644809293,
+      "integrated_heat_W": 0.4701435644809293,
+      "integrated_copper_m3": 2.4221483784215935e-07,
+      "conductor_copper_m3": 2.422148378421594e-07
+    },
+    {
+      "end_radius_mm": 5.0,
+      "step_mm": 0.8,
+      "shape": [
+        33,
+        26,
+        74
+      ],
+      "peak_temperature_C": 31.230458620021746,
+      "relative_residual": 9.970577803525234e-10,
+      "heat_input_W": 0.4415091501807274,
+      "integrated_heat_W": 0.4415091501807274,
+      "integrated_copper_m3": 2.274625780210852e-07,
+      "conductor_copper_m3": 2.2746257802108523e-07
+    }
+  ],
+  "assumptions": {
+    "composite_k_W_mK": 1.0,
+    "polymer_k_W_mK": 0.2,
+    "air_k_W_mK": 0.026,
+    "copper_k_W_mK": 385.0,
+    "boundary": "all six box faces fixed at 25 C",
+    "current_A": 3.0,
+    "wire_mapping": "volume-conserving Gaussian subgrid surrogate; isotropic conductivity approximation"
+  },
+  "performance_advantage_verified": false,
+  "limitations": [
+    "Same-current copper-loss comparison is not same-torque efficiency comparison",
+    "No new rotor, calibrated B-H data, iron loss or torque constraint",
+    "Thermal model is an uncalibrated isolated-sector screening model; no airflow or contact resistance",
+    "Must verify mesh convergence and real material data before accepting thermal superiority"
+  ]
+}

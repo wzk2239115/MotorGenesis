@@ -95,6 +95,8 @@ def create_app(out_root: str | Path = "organic_motor/out") -> FastAPI:
     roots = [Path(p).resolve() for p in str(out_root).split(":") if p]
 
     app = FastAPI(title="MotorGenesis viewer")
+    from organic_motor.web.prototype_api import install
+    install(app, roots[0])
     app.mount(
         "/static",
         StaticFiles(directory=str(Path(__file__).parent / "static")),

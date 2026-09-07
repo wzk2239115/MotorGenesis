@@ -1,0 +1,95 @@
+{
+  "method": "assembled exported STL solid Boolean intersection",
+  "design_hash": "927a33bb055b82d1",
+  "instances": 89,
+  "broad_phase_candidates": 342,
+  "threshold_mm3": 0.02,
+  "collisions": [
+    {
+      "a": "wire_00",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_01",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_02",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_03",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_04",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_05",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_06",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_07",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_08",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_09",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_10",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "wire_11",
+      "b": "front_retainer",
+      "intersection_mm3": 0.51536
+    },
+    {
+      "a": "housing",
+      "b": "cooling_tube",
+      "intersection_mm3": 536.872494
+    },
+    {
+      "a": "carrier",
+      "b": "pin_0",
+      "intersection_mm3": 0.096641
+    },
+    {
+      "a": "carrier",
+      "b": "pin_1",
+      "intersection_mm3": 0.097364
+    },
+    {
+      "a": "carrier",
+      "b": "pin_2",
+      "intersection_mm3": 0.097357
+    }
+  ],
+  "static_interference_pass": false,
+  "limitations": [
+    "Does not certify FDM tolerances or strength",
+    "Zero-volume contact is not classified as interference",
+    "Tool access and motion require separate checks"
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "geometry_findings": [
+    "Manufacturing generator realizes three continuous phase routes, four coils each",
+    "S/F table, nine series links and U/V/W/N coordinates are exported in wiring.json"
+  ],
+  "legacy_checker_expected_components_per_phase": [
+    4,
+    4,
+    4
+  ],
+  "canonical_MOTOR_SPEC": {
+    "table_zero_based": [
+      [
+        0,
+        0,
+        1
+      ],
+      [
+        1,
+        0,
+        -1
+      ],
+      [
+        2,
+        1,
+        -1
+      ],
+      [
+        3,
+        1,
+        1
+      ],
+      [
+        4,
+        2,
+        1
+      ],
+      [
+        5,
+        2,
+        -1
+      ],
+      [
+        6,
+        0,
+        -1
+      ],
+      [
+        7,
+        0,
+        1
+      ],
+      [
+        8,
+        1,
+        1
+      ],
+      [
+        9,
+        1,
+        -1
+      ],
+      [
+        10,
+        2,
+        -1
+      ],
+      [
+        11,
+        2,
+        1
+      ]
+    ],
+    "fundamental_axis_phasor_magnitudes": [
+      3.863703305156274,
+      3.863703305156273,
+      3.8637033051562732
+    ],
+    "fundamental_axis_phasor_angles_deg": [
+      -15.000000000000034,
+      105.00000000000001,
+      -134.99999999999994
+    ],
+    "note": "Equal-turn radial tooth-axis phasor check only; not a field-solved torque or wiring release"
+  },
+  "explicit_12s10p_printed_netlist": {
+    "table_zero_based": [
+      [
+        0,
+        0,
+        1
+      ],
+      [
+        1,
+        0,
+        -1
+      ],
+      [
+        2,
+        1,
+        -1
+      ],
+      [
+        3,
+        1,
+        1
+      ],
+      [
+        4,
+        2,
+        1
+      ],
+      [
+        5,
+        2,
+        -1
+      ],
+      [
+        6,
+        0,
+        -1
+      ],
+      [
+        7,
+        0,
+        1
+      ],
+      [
+        8,
+        1,
+        1
+      ],
+      [
+        9,
+        1,
+        -1
+      ],
+      [
+        10,
+        2,
+        -1
+      ],
+      [
+        11,
+        2,
+        1
+      ]
+    ],
+    "fundamental_axis_phasor_magnitudes": [
+      3.863703305156274,
+      3.863703305156273,
+      3.8637033051562732
+    ],
+    "fundamental_axis_phasor_angles_deg": [
+      -15.000000000000034,
+      105.00000000000001,
+      -134.99999999999994
+    ],
+    "note": "Equal-turn radial tooth-axis phasor check only; not a field-solved torque or wiring release"
+  },
+  "winding_ready_for_power": false,
+  "required": [
+    "Design rear harness retention and terminal hardware",
+    "Qualify insulation, bend radius and physical joints",
+    "Validate candidate current/flux polarity and torque with new material measurements"
+  ]
+}

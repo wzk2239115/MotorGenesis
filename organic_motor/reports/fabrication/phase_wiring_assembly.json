@@ -1,0 +1,374 @@
+{
+  "method": "assembled exported STL solid Boolean intersection",
+  "design_hash": "be3e9f87bbb2ace9",
+  "instances": 91,
+  "broad_phase_candidates": 362,
+  "threshold_mm3": 0.02,
+  "collisions": [],
+  "intended_electrical_contacts": [
+    {
+      "a": "phase_U",
+      "b": "phase_V",
+      "node": "N",
+      "intersection_mm3": 0.0793962600502898,
+      "outside_joint_mm3": 0.0,
+      "region_radius_mm": 2
+    },
+    {
+      "a": "phase_U",
+      "b": "phase_W",
+      "node": "N",
+      "intersection_mm3": 0.027838516407698154,
+      "outside_joint_mm3": 0.0,
+      "region_radius_mm": 2
+    },
+    {
+      "a": "phase_V",
+      "b": "phase_W",
+      "node": "N",
+      "intersection_mm3": 0.08795323330834227,
+      "outside_joint_mm3": 0.0,
+      "region_radius_mm": 2
+    }
+  ],
+  "static_interference_pass": true,
+  "limitations": [
+    "No manufacturing tolerance or strength certification",
+    "Zero-volume contact excluded",
+    "Static solids and specified axial tool envelope only; gear motion and core insertion have separate tests"
+  ],
+  "fasteners": {
+    "shank_gauge_diameter_mm": 3.3,
+    "nominal_radial_clearance_verified_mm": 0.15,
+    "socket_envelope": {
+      "outer_diameter_mm": 11,
+      "inner_diameter_mm": 7,
+      "approach": "axial; specific tool must be checked"
+    },
+    "bore_checks": [
+      {
+        "axis": 0,
+        "part": "housing",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 0,
+        "part": "front_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 0,
+        "part": "rear_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 0,
+        "part": "adapter",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 0,
+        "part": "ring",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 0,
+        "part": "gear_cover",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "part": "housing",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "part": "front_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "part": "rear_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "part": "adapter",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "part": "ring",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "part": "gear_cover",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "part": "housing",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "part": "front_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "part": "rear_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "part": "adapter",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "part": "ring",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "part": "gear_cover",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "part": "housing",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "part": "front_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "part": "rear_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "part": "adapter",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "part": "ring",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "part": "gear_cover",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "part": "housing",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "part": "front_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "part": "rear_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "part": "adapter",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "part": "ring",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "part": "gear_cover",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "part": "housing",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "part": "front_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "part": "rear_retainer",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "part": "adapter",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "part": "ring",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "part": "gear_cover",
+        "obstruction_mm3": 0.0,
+        "pass_check": true
+      }
+    ],
+    "housing_wall_checks": [
+      {
+        "axis": 0,
+        "missing_wall_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "missing_wall_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "missing_wall_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "missing_wall_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "missing_wall_mm3": 0.0,
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "missing_wall_mm3": 0.0,
+        "pass_check": true
+      }
+    ],
+    "tool_checks": [
+      {
+        "axis": 0,
+        "side": "front",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 0,
+        "side": "rear",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "side": "front",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 1,
+        "side": "rear",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "side": "front",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 2,
+        "side": "rear",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "side": "front",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 3,
+        "side": "rear",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "side": "front",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 4,
+        "side": "rear",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "side": "front",
+        "collisions": [],
+        "pass_check": true
+      },
+      {
+        "axis": 5,
+        "side": "rear",
+        "collisions": [],
+        "pass_check": true
+      }
+    ],
+    "pass_check": true
+  }
+}
