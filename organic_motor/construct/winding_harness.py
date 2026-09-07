@@ -37,14 +37,20 @@ def lead_path(endpoint,level):
     return rounded_path([endpoint,[endpoint[0],endpoint[1],28.25],[*xy,28.25],[*xy,level]])
 
 
-def series_bridge(a,b,phase):
-    level=-34-4*phase;radius=70+3*phase
+def series_bridge(a,b,phase,bridge_idx=0):
+    # Each bridge within a phase is offset radially by 1.0 mm so that
+    # adjacent arcs (whose S/F endpoints differ by ~0.9°) do not coincide.
+    # Transitions step up 2 mm in z to avoid crossing other bridges' arcs.
+    level=-34-4*phase;radius=70+3*phase+bridge_idx*1.0
     la=lead_path(a,level);lb=lead_path(b,level)
     aa=np.arctan2(a[1],a[0]);ab=np.arctan2(b[1],b[0]);delta=(ab-aa)%(2*np.pi)
     if delta>np.pi:delta-=2*np.pi
     angles=np.linspace(aa,aa+delta,max(12,int(abs(delta)*radius/.15)))
     arc=np.column_stack([radius*np.cos(angles),radius*np.sin(angles),np.full(len(angles),level)])
-    mid=rounded_path([la[-1],arc[0],*arc[1:-1],arc[-1],lb[-1]],radius=.8)
+    dz=2.0
+    mid=rounded_path([la[-1],[la[-1][0],la[-1][1],level+dz],
+        [arc[0][0],arc[0][1],level+dz],arc[0],*arc[1:-1],arc[-1],
+        [arc[-1][0],arc[-1][1],level+dz],[lb[-1][0],lb[-1][1],level+dz],lb[-1]],radius=.8)
     return np.vstack([la,mid[1:],lb[-2::-1]])
 
 
@@ -66,8 +72,8 @@ def make_harness(local_route,turns=8):
         start_lead=lead_path(oriented[0][0],-34-4*phase)
         terminals['UVW'[phase]]=start_lead[-1].tolist()
         segments=[start_lead[::-1],oriented[0][1:]]
-        for left,right,e1,e2 in zip(oriented[:-1],oriented[1:],entries[:-1],entries[1:]):
-            bridge=series_bridge(left[-1],right[0],phase)
+        for idx,(left,right,e1,e2) in enumerate(zip(oriented[:-1],oriented[1:],entries[:-1],entries[1:])):
+            bridge=series_bridge(left[-1],right[0],phase,idx)
             segments.extend([bridge[1:],right[1:]])
             links.append(dict(phase='UVW'[phase],source=e1['output_terminal'],target=e2['input_terminal']))
         last_lead=lead_path(oriented[-1][-1],-47)

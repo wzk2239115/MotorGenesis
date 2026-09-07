@@ -23,10 +23,19 @@ def bracket_params():
         mount_radius=54.0,
         mount_hole_radius=1.8,
         # Clamp positions: 3 per phase, angularly offset so they don't overlap
+        # One clamp per bridge: (z, r, phase, bridge_idx, angle)
+        # Radii match series_bridge offset: 70+3*phase+bridge_idx*1.0
+        # Angles offset so clamps at different radii don't collide
         clamp_config=[
-            (-34.0, 70.0, 'U', [0, 2*np.pi/3, 4*np.pi/3]),
-            (-38.0, 73.0, 'V', [np.pi/3, np.pi, 5*np.pi/3]),
-            (-42.0, 76.0, 'W', [np.pi/6, 5*np.pi/6, 3*np.pi/2]),
+            (-34.0, 70.0, 'U', 0, 0),
+            (-34.0, 71.0, 'U', 1, 2*np.pi/3),
+            (-34.0, 72.0, 'U', 2, 4*np.pi/3),
+            (-38.0, 73.0, 'V', 0, np.pi/3),
+            (-38.0, 74.0, 'V', 1, np.pi),
+            (-38.0, 75.0, 'V', 2, 5*np.pi/3),
+            (-42.0, 76.0, 'W', 0, np.pi/6),
+            (-42.0, 77.0, 'W', 1, 5*np.pi/6),
+            (-42.0, 78.0, 'W', 2, 3*np.pi/2),
         ],
         clamp_width=6.0,        # tangential
         clamp_depth=3.0,        # radial (separates phase arcs at 3 mm spacing)
@@ -72,11 +81,10 @@ def bracket_base_field(x, y, z, spec):
         hole_dist = np.hypot(x - p['mount_radius'] * np.cos(a),
                              y - p['mount_radius'] * np.sin(a))
         body = np.maximum(body, p['mount_hole_radius'] - hole_dist)
-    for z_level, r_bridge, _, angles in p['clamp_config']:
-        for a in angles:
-            cx, cy = r_bridge * np.cos(a), r_bridge * np.sin(a)
-            clamp_dist = np.hypot(x - cx, y - cy)
-            body = np.maximum(body, p['clamp_screw_radius'] - clamp_dist)
+    for z_level, r_bridge, _, _, angle in p['clamp_config']:
+        cx, cy = r_bridge * np.cos(angle), r_bridge * np.sin(angle)
+        clamp_dist = np.hypot(x - cx, y - cy)
+        body = np.maximum(body, p['clamp_screw_radius'] - clamp_dist)
     return body
 
 
@@ -155,33 +163,31 @@ def build_terminal_assets(report):
 
 
 def build_clamp_assets():
-    """Generate cable clamp meshes for each phase bridge arc."""
+    """Generate cable clamp meshes, one per bridge."""
     p = bracket_params()
     clamps = {}
     clamp_list = []
-    for z_level, r_bridge, phase_label, angles in p['clamp_config']:
-        for j, angle in enumerate(angles):
-            name = f'clamp_{phase_label}_{j}'
-            clamps[name] = cable_clamp(z_level, r_bridge, angle)
-            clamp_list.append(dict(
-                name=name, phase=phase_label, r_mm=r_bridge,
-                z_mm=z_level, angle_rad=float(angle),
-                position_mm=[r_bridge * np.cos(angle),
-                             r_bridge * np.sin(angle), z_level]))
+    for z_level, r_bridge, phase_label, bridge_idx, angle in p['clamp_config']:
+        name = f'clamp_{phase_label}_{bridge_idx}'
+        clamps[name] = cable_clamp(z_level, r_bridge, angle)
+        clamp_list.append(dict(
+            name=name, phase=phase_label, bridge_idx=bridge_idx,
+            r_mm=r_bridge, z_mm=z_level, angle_rad=float(angle),
+            position_mm=[r_bridge * np.cos(angle),
+                         r_bridge * np.sin(angle), z_level]))
     return clamps, clamp_list
 
 
 def fixing_report():
     """Per-segment wire fixing method summary for the harness report."""
     p = bracket_params()
-    n_clamps = sum(len(angles) for _, _, _, angles in p['clamp_config'])
+    n_clamps = len(p['clamp_config'])
     return dict(
         bracket=f'FDM thin mounting ring r={p["inner_radius"]}-{p["outer_radius"]} mm, z={p["z_top"]} to {p["z_bottom"]} mm',
         mounting=f'6 tie-rod holes at r={p["mount_radius"]} mm; bracket secured by extended 130 mm tie rods + M3 nuts below rear retainer nuts',
-        cable_clamps=f'{n_clamps} tall clamps (3 per phase), angularly offset to avoid overlap; each reaches from bracket top to wire routing level',
-        clamp_details=[dict(phase=ph, r_mm=r, z_mm=z,
-                            angles_deg=[round(float(a)*180/np.pi, 1) for a in angles])
-                       for z, r, ph, angles in p['clamp_config']],
+        cable_clamps=f'{n_clamps} clamps (one per bridge, per-bridge radial offset 1.0 mm)',
+        clamp_details=[dict(phase=ph, bridge_idx=bi, r_mm=r, z_mm=z, angle_deg=round(float(a)*180/np.pi,1))
+                       for z, r, ph, bi, a in p['clamp_config']],
         terminals='Cylindrical terminal posts with M3 set-screw;采购型号待确认',
         terminal_positions='U/V/W at phase start endpoints; N at star point',
         assembly_sequence=[

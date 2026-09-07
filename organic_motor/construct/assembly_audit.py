@@ -55,7 +55,7 @@ def audit(assets,report,tolerance_mm3=.02):
     for cl in harness.get('clamp_list',[]):
         ph_id='phase_'+cl['phase']
         contact_regions.append((frozenset([ph_id,cl['name']]),
-            manifold3d.Manifold.sphere(2.5,32).translate(cl['position_mm']),cl['name']))
+            manifold3d.Manifold.sphere(4.0,32).translate(cl['position_mm']),cl['name']))
     collisions=[];contacts=[];candidates=0
     for i,(name,a,box_a) in enumerate(instances):
         for name_b,b,box_b in instances[i+1:]:

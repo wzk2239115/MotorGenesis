@@ -132,7 +132,7 @@ def test_wiring_bracket_is_printable_and_has_clearance():
     assert m.is_watertight and m.body_count==1 and m.volume>0
     # Clamps are watertight, one per phase level
     p=bracket_params()
-    for z,r,ph,_ in p['clamp_config']:
+    for z,r,ph,_,_ in p['clamp_config']:
         clamp=cable_clamp(z,r,0)
         assert clamp.is_watertight and clamp.volume>0
     # Terminal posts are watertight

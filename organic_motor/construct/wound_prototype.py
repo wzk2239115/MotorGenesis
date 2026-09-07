@@ -282,9 +282,11 @@ def build(spec=None,card=None):
     bxyz,bo,bh=grid(((28,52),(-16,16),(-25,25)),.2)
     assets['grooved_bobbin']=mesh_field(sleeve_field(*bxyz,spec,route),bo,bh)
     from organic_motor.construct.winding_harness import make_harness, verify_harness
+    from organic_motor.construct.manufacturability import run_manufacturability_checks
     phase_paths,harness,ports=make_harness(route,spec.turns)
     harness['verification']=verify_harness(phase_paths,harness,spec.wire_diameter_mm/2+spec.enamel_radial_mm)
     if not harness['verification']['passed']:raise ValueError(harness['verification'])
+    harness['manufacturability']=run_manufacturability_checks(phase_paths,harness,spec)
     for phase,path in phase_paths.items():
         assets['phase_'+phase]=sweep_tube(path,spec.wire_diameter_mm/2+spec.enamel_radial_mm)
     harness['support_status']='后侧分层引线的固定夹具与端子座尚未落实；不能直接投产'

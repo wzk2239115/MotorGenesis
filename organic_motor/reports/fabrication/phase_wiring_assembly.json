@@ -1,8 +1,8 @@
 {
   "method": "assembled exported STL solid Boolean intersection",
-  "design_hash": "5ee21cdba6305d3c",
+  "design_hash": "519074c9ed484a6d",
   "instances": 117,
-  "broad_phase_candidates": 460,
+  "broad_phase_candidates": 462,
   "threshold_mm3": 0.02,
   "collisions": [],
   "intended_electrical_contacts": [
@@ -10,42 +10,42 @@
       "a": "phase_U",
       "b": "phase_V",
       "node": "N",
-      "intersection_mm3": 0.079396,
+      "intersection_mm3": 0.079409,
       "outside_region_mm3": 0.0
     },
     {
       "a": "phase_U",
       "b": "phase_W",
       "node": "N",
-      "intersection_mm3": 0.027839,
+      "intersection_mm3": 0.027838,
       "outside_region_mm3": 0.0
     },
     {
       "a": "phase_U",
       "b": "terminal_U",
       "node": "terminal_U",
-      "intersection_mm3": 5.082819,
+      "intersection_mm3": 6.13715,
       "outside_region_mm3": 0.0
     },
     {
       "a": "phase_U",
       "b": "terminal_N",
       "node": "terminal_N",
-      "intersection_mm3": 1.026811,
+      "intersection_mm3": 1.026814,
       "outside_region_mm3": 0.0
     },
     {
       "a": "phase_V",
       "b": "phase_W",
       "node": "N",
-      "intersection_mm3": 0.087953,
+      "intersection_mm3": 0.087948,
       "outside_region_mm3": 0.0
     },
     {
       "a": "phase_V",
       "b": "terminal_V",
       "node": "terminal_V",
-      "intersection_mm3": 5.331665,
+      "intersection_mm3": 6.38641,
       "outside_region_mm3": 0.0
     },
     {
@@ -57,16 +57,30 @@
     },
     {
       "a": "phase_W",
+      "b": "clamp_W_1",
+      "node": "clamp_W_1",
+      "intersection_mm3": 1.10837,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_W",
+      "b": "clamp_W_2",
+      "node": "clamp_W_2",
+      "intersection_mm3": 1.107755,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_W",
       "b": "terminal_W",
       "node": "terminal_W",
-      "intersection_mm3": 6.086553,
+      "intersection_mm3": 7.141272,
       "outside_region_mm3": 0.0
     },
     {
       "a": "phase_W",
       "b": "terminal_N",
       "node": "terminal_N",
-      "intersection_mm3": 1.028239,
+      "intersection_mm3": 1.028245,
       "outside_region_mm3": 0.0
     }
   ],
