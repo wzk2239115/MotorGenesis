@@ -396,17 +396,65 @@ def build(spec=None,card=None):
     assets['rear_retainer']=rear
     add('rear_retainer','rear_retainer','后磁芯限位盖','FDM 试配 · 轴向间隙 0.3 mm',explode=(0,0,-85))
     assets['motor_adapter_spacer']=annular_profile(np.full(64,1.8),np.full(64,4.2),1.5)
-    assets['tie_rod']=trimesh.creation.cylinder(radius=1.5,height=105,sections=32)
+    # Tie rods extended from 105 to 130 mm to also retain the rear wiring bracket
+    # below the rear retainer nuts. Position z=15 gives span [-50, 80].
+    assets['tie_rod']=trimesh.creation.cylinder(radius=1.5,height=130,sections=32)
     q=np.arange(96)*2*np.pi/96
     assets['tie_nut']=annular_profile(np.full(96,1.65),2.75/np.cos((q+np.pi/6)%(np.pi/3)-np.pi/6),2.4)
     assets['tie_washer']=annular_profile(np.full(96,1.7),np.full(96,3.5),.5)
     for i in range(6):
         a=i*np.pi/3;pos=(54*np.cos(a),54*np.sin(a))
         add(f'motor_spacer_{i}','motor_adapter_spacer','法兰垫柱 · 1.5 mm','FDM / 加工',position=(*pos,28.25),explode=(0,0,17))
-        add(f'tie_rod_{i}','tie_rod','M3 贯穿拉杆 · 105 mm 包络','采购螺纹杆，模型未画螺纹',position=(*pos,20),explode=(20*np.cos(a),20*np.sin(a),0))
+        add(f'tie_rod_{i}','tie_rod','M3 贯穿拉杆 · 130 mm 包络','采购螺纹杆，模型未画螺纹；延长 25 mm 用于固定接线支架',position=(*pos,15),explode=(20*np.cos(a),20*np.sin(a),0))
         for suffix,zpos in [('rear',-29.2),('front',67.7)]:
             add(f'washer_{suffix}_{i}','tie_washer','M3 垫圈 · 7/3.4/0.5','采购尺寸包络',position=(*pos,-27.75 if suffix=='rear' else 66.25),explode=(0,0,-88 if suffix=='rear' else 92))
             add(f'nut_{suffix}_{i}','tie_nut','M3 螺母尺寸包络','采购，实物尺寸需核对',position=(*pos,zpos),explode=(0,0,-90 if suffix=='rear' else 95))
+    # Rear wiring bracket: 3 concentric channels fix the phase bridge arcs,
+    # 12 lead clearance slots pass vertical leads at r=65, 6 tie-rod mounting
+    # holes secure the bracket below the rear retainer nuts.
+    from organic_motor.construct.wiring_bracket import (bracket_base_field,
+        bracket_params, build_terminal_assets, build_clamp_assets, fixing_report,
+        _manifold, _mesh)
+    bxyz,bo,bh=grid(((-84,84),(-84,84),(-49,-43)),.5)
+    bracket_mesh=mesh_field(bracket_base_field(*bxyz,spec),bo,bh)
+    # Cut clean clearance for wire paths that pass through the bracket
+    # (star-point leads and radial connections) using exact Boolean ops.
+    bracket_solid=_manifold(bracket_mesh)
+    for phase in 'UVW':
+        p=phase_paths[phase]
+        mask=(p[:,2]>=-50)&(p[:,2]<=-42)
+        if not mask.any():continue
+        idx=np.where(mask)[0]
+        # Split into contiguous segments
+        splits=np.where(np.diff(idx)>1)[0]+1
+        for seg in np.split(idx,splits):
+            if len(seg)<2:continue
+            tube=sweep_tube(p[seg],1.0)
+            bracket_solid=bracket_solid-_manifold(tube)
+    bracket_mesh=_mesh(bracket_solid);bracket_mesh.fix_normals()
+    if not bracket_mesh.is_watertight:trimesh.repair.fill_holes(bracket_mesh);bracket_mesh.fix_normals()
+    assets['harness_bracket_base']=bracket_mesh
+    bp=bracket_params()
+    terminal_assets,terminal_contacts=build_terminal_assets(harness)
+    assets.update(terminal_assets)
+    clamp_assets,clamp_list=build_clamp_assets()
+    assets.update(clamp_assets)
+    harness['terminal_contacts']=terminal_contacts
+    harness['clamp_list']=clamp_list
+    harness['fixing']=fixing_report()
+    harness['support_status']='后侧接线支架、线缆夹与端子座已生成；FDM 公差、端子采购型号与绝缘耐压待确认'
+    add('harness_bracket','harness_bracket_base','后侧接线支架 · 线缆夹安装面','FDM 配合样件',group='wiring',explode=(0,0,-55))
+    for clamp_info in clamp_list:
+        add(clamp_info['name'],clamp_info['name'],
+            f"线缆夹 · {clamp_info['phase']} 相弧线固定",'FDM 配合样件',group='wiring',
+            explode=(0,0,-60))
+    for phase in 'UVW':
+        add('terminal_'+phase,'terminal_'+phase,phase+' 端子座 · M3 接线柱','采购型号待确认',group='wiring',explode=(0,0,-60))
+    add('terminal_N','terminal_N','N 星点端子座 · M3 接线柱','采购型号待确认',group='wiring',explode=(0,0,-75))
+    for i in range(6):
+        a=i*np.pi/3;pos=(54*np.cos(a),54*np.sin(a))
+        add(f'washer_bracket_{i}','tie_washer','M3 垫圈 · 支架','采购尺寸包络',position=(*pos,-45.0),explode=(0,0,-92))
+        add(f'nut_bracket_{i}','tie_nut','M3 螺母 · 支架紧固','采购，实物尺寸需核对',position=(*pos,-47.0),explode=(0,0,-94))
     shrink=card.get('shrinkage',{}).get('linear_xyz',[0,0,0])
     if card.get('shrinkage',{}).get('measured'):
         measured=shrinkage_from_coupon(card['shrinkage'].get('coupon_mold_mm'),card['shrinkage'].get('coupon_cast_mm'))
@@ -421,8 +469,8 @@ def build(spec=None,card=None):
             route_length_mm=float(np.linalg.norm(np.diff(route,axis=0),axis=1).sum()),
             lead_allowance_each_mm=80,start_mm=route[0].tolist(),end_mm=route[-1].tolist(),
             insertion_direction=[-1,0,0],insertion_travel_mm=35,
-            instructions=['单独打印带槽骨架并检查穿孔','沿同源螺旋槽绕线，预留两端引线','将磁芯从骨架外径侧沿径向向内插入','将 12 个已绕线磁芯段装入承载壳','按三相 S/F 接线表串联，每相四段，三相末端汇入 N；驱动接 U/V/W；检查绝缘后再装转子'],
-            phase_connection_status='三相串联路径已生成；新拓扑转矩、绝缘与线束固定仍待验证'),
+            instructions=['单独打印带槽骨架并检查穿孔','沿同源螺旋槽绕线，预留两端引线','将磁芯从骨架外径侧沿径向向内插入','将 12 个已绕线磁芯段装入承载壳','安装前后限位盖与六根贯穿拉杆，扭紧前后螺母','将接线支架套入拉杆，置于后螺母下方，加垫圈与螺母紧固','按三相 S/F 接线表串联，每相四段；引线穿过支架 r=65 清理孔，跨接弧线落入对应层线槽','安装 U/V/W/N 端子座，剥漆压接或焊接引线','盖上压线盖，用 6×M2.5 螺钉从下方紧固；三相末端汇入 N；驱动接 U/V/W；检查绝缘后再装转子'],
+            phase_connection_status='三相串联路径与接线支架已生成；新拓扑转矩、绝缘耐压与端子采购型号仍待验证'),
         gearbox=dict(ratio=spec.ratio,ring_teeth=spec.ring_teeth,planet_orbit_mm=orbit,
             shaft_diameter_mm=16,planet_pin_diameter_mm=6,bolt_circle_diameter_mm=108,bolt_holes=6,
             tooth_model='sampled involute flanks; no root-fillet/contact-load certification',
@@ -432,7 +480,7 @@ def build(spec=None,card=None):
             tooling_allowance_mm=.1,feed_diameter_mm=4,vent_diameter_mm=1.3,
             note='两轴向半模；四孔夹紧，分模面另需定位工装。拔模通过截面嵌套检查，收缩按各轴 1/(1-s) 补偿。'),
         housing=dict(profile='circular arc in radial-axial section',arc_radius_mm=spec.housing_arc_radius_mm,middle_outer_diameter_mm=2*spec.housing_mid_radius_mm,end_outer_diameter_mm=2*float(housing_outer_radius(24.5,spec)),helical_cooling_tube=False),
-        assembly_checks=dict(core_axial_clearance_mm=.3,shared_tie_rod_diameter_mm=3,shared_tie_rod_length_mm=105,retention='前后限位盖与六根贯穿拉杆；初始配合间隙需试配修正'),
+        assembly_checks=dict(core_axial_clearance_mm=.3,shared_tie_rod_diameter_mm=3,shared_tie_rod_length_mm=130,retention='前后限位盖与六根贯穿拉杆；初始配合间隙需试配修正；接线支架由延长拉杆与附加螺母紧固'),
         manufacturing_release=False)
     return assets,report,route
 
@@ -468,7 +516,7 @@ def export(out, spec=None, card=None):
     with (out/'bill_of_materials.csv').open('w',newline='',encoding='utf-8-sig') as f:
         writer=csv.DictWriter(f,fieldnames=['asset','quantity','process']);writer.writeheader();writer.writerows(report['bill_of_materials'])
     report['generator_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    report['wiring_source_sha256']=hashlib.sha256((Path(__file__).parent/'winding_harness.py').read_bytes()+(Path(__file__).parents[1]/'topology'/'winding_assignment.py').read_bytes()).hexdigest()
+    report['wiring_source_sha256']=hashlib.sha256((Path(__file__).parent/'winding_harness.py').read_bytes()+(Path(__file__).parents[1]/'topology'/'winding_assignment.py').read_bytes()+(Path(__file__).parent/'wiring_bracket.py').read_bytes()).hexdigest()
     report['design_hash']=hashlib.sha256(json.dumps(report,sort_keys=True).encode()).hexdigest()[:16]
     (out/'wiring.json').write_text(json.dumps(report['winding_harness'],ensure_ascii=False,indent=2))
     (out/'manifest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))

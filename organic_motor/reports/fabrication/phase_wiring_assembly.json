@@ -1,8 +1,8 @@
 {
   "method": "assembled exported STL solid Boolean intersection",
-  "design_hash": "be3e9f87bbb2ace9",
-  "instances": 91,
-  "broad_phase_candidates": 362,
+  "design_hash": "5ee21cdba6305d3c",
+  "instances": 117,
+  "broad_phase_candidates": 460,
   "threshold_mm3": 0.02,
   "collisions": [],
   "intended_electrical_contacts": [
@@ -10,25 +10,64 @@
       "a": "phase_U",
       "b": "phase_V",
       "node": "N",
-      "intersection_mm3": 0.0793962600502898,
-      "outside_joint_mm3": 0.0,
-      "region_radius_mm": 2
+      "intersection_mm3": 0.079396,
+      "outside_region_mm3": 0.0
     },
     {
       "a": "phase_U",
       "b": "phase_W",
       "node": "N",
-      "intersection_mm3": 0.027838516407698154,
-      "outside_joint_mm3": 0.0,
-      "region_radius_mm": 2
+      "intersection_mm3": 0.027839,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_U",
+      "b": "terminal_U",
+      "node": "terminal_U",
+      "intersection_mm3": 5.082819,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_U",
+      "b": "terminal_N",
+      "node": "terminal_N",
+      "intersection_mm3": 1.026811,
+      "outside_region_mm3": 0.0
     },
     {
       "a": "phase_V",
       "b": "phase_W",
       "node": "N",
-      "intersection_mm3": 0.08795323330834227,
-      "outside_joint_mm3": 0.0,
-      "region_radius_mm": 2
+      "intersection_mm3": 0.087953,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_V",
+      "b": "terminal_V",
+      "node": "terminal_V",
+      "intersection_mm3": 5.331665,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_V",
+      "b": "terminal_N",
+      "node": "terminal_N",
+      "intersection_mm3": 1.027641,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_W",
+      "b": "terminal_W",
+      "node": "terminal_W",
+      "intersection_mm3": 6.086553,
+      "outside_region_mm3": 0.0
+    },
+    {
+      "a": "phase_W",
+      "b": "terminal_N",
+      "node": "terminal_N",
+      "intersection_mm3": 1.028239,
+      "outside_region_mm3": 0.0
     }
   ],
   "static_interference_pass": true,
@@ -300,73 +339,139 @@
         "axis": 0,
         "side": "front",
         "collisions": [],
-        "pass_check": true
+        "staged_collisions_pre_bracket": [],
+        "pass_check": true,
+        "staged_pass_pre_bracket": true,
+        "note": ""
       },
       {
         "axis": 0,
         "side": "rear",
-        "collisions": [],
-        "pass_check": true
+        "collisions": [
+          {
+            "part": "harness_bracket",
+            "mm3": 8.011603587351278
+          }
+        ],
+        "staged_collisions_pre_bracket": [],
+        "pass_check": false,
+        "staged_pass_pre_bracket": true,
+        "note": "rear access requires bracket removal"
       },
       {
         "axis": 1,
         "side": "front",
         "collisions": [],
-        "pass_check": true
+        "staged_collisions_pre_bracket": [],
+        "pass_check": true,
+        "staged_pass_pre_bracket": true,
+        "note": ""
       },
       {
         "axis": 1,
         "side": "rear",
-        "collisions": [],
-        "pass_check": true
+        "collisions": [
+          {
+            "part": "harness_bracket",
+            "mm3": 7.602904542967816
+          }
+        ],
+        "staged_collisions_pre_bracket": [],
+        "pass_check": false,
+        "staged_pass_pre_bracket": true,
+        "note": "rear access requires bracket removal"
       },
       {
         "axis": 2,
         "side": "front",
         "collisions": [],
-        "pass_check": true
+        "staged_collisions_pre_bracket": [],
+        "pass_check": true,
+        "staged_pass_pre_bracket": true,
+        "note": ""
       },
       {
         "axis": 2,
         "side": "rear",
-        "collisions": [],
-        "pass_check": true
+        "collisions": [
+          {
+            "part": "harness_bracket",
+            "mm3": 7.692652806657883
+          }
+        ],
+        "staged_collisions_pre_bracket": [],
+        "pass_check": false,
+        "staged_pass_pre_bracket": true,
+        "note": "rear access requires bracket removal"
       },
       {
         "axis": 3,
         "side": "front",
         "collisions": [],
-        "pass_check": true
+        "staged_collisions_pre_bracket": [],
+        "pass_check": true,
+        "staged_pass_pre_bracket": true,
+        "note": ""
       },
       {
         "axis": 3,
         "side": "rear",
-        "collisions": [],
-        "pass_check": true
+        "collisions": [
+          {
+            "part": "harness_bracket",
+            "mm3": 8.011608169071732
+          }
+        ],
+        "staged_collisions_pre_bracket": [],
+        "pass_check": false,
+        "staged_pass_pre_bracket": true,
+        "note": "rear access requires bracket removal"
       },
       {
         "axis": 4,
         "side": "front",
         "collisions": [],
-        "pass_check": true
+        "staged_collisions_pre_bracket": [],
+        "pass_check": true,
+        "staged_pass_pre_bracket": true,
+        "note": ""
       },
       {
         "axis": 4,
         "side": "rear",
-        "collisions": [],
-        "pass_check": true
+        "collisions": [
+          {
+            "part": "harness_bracket",
+            "mm3": 7.669293529080481
+          }
+        ],
+        "staged_collisions_pre_bracket": [],
+        "pass_check": false,
+        "staged_pass_pre_bracket": true,
+        "note": "rear access requires bracket removal"
       },
       {
         "axis": 5,
         "side": "front",
         "collisions": [],
-        "pass_check": true
+        "staged_collisions_pre_bracket": [],
+        "pass_check": true,
+        "staged_pass_pre_bracket": true,
+        "note": ""
       },
       {
         "axis": 5,
         "side": "rear",
-        "collisions": [],
-        "pass_check": true
+        "collisions": [
+          {
+            "part": "harness_bracket",
+            "mm3": 7.626276904104996
+          }
+        ],
+        "staged_collisions_pre_bracket": [],
+        "pass_check": false,
+        "staged_pass_pre_bracket": true,
+        "note": "rear access requires bracket removal"
       }
     ],
     "pass_check": true

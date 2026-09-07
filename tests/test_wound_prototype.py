@@ -118,3 +118,53 @@ def test_housing_sides_are_circular_and_end_wall_is_preserved():
     assert np.allclose((r-(spec.housing_mid_radius_mm-spec.housing_arc_radius_mm))**2+z**2,spec.housing_arc_radius_mm**2)
     assert r[50]-r[0]>9
     assert r.min()-50>=2
+
+
+def test_wiring_bracket_is_printable_and_has_clearance():
+    from organic_motor.construct.wiring_bracket import (bracket_base_field,
+        bracket_params, cable_clamp, terminal_post, build_terminal_assets,
+        build_clamp_assets, fixing_report)
+    from organic_motor.construct.wound_prototype import grid, mesh_field, winding_route, WoundSpec, build
+    spec=WoundSpec()
+    # Bracket base is a watertight solid ring
+    bxyz,bo,bh=grid(((-84,84),(-84,84),(-49,-43)),.5)
+    m=mesh_field(bracket_base_field(*bxyz,spec),bo,bh)
+    assert m.is_watertight and m.body_count==1 and m.volume>0
+    # Clamps are watertight, one per phase level
+    p=bracket_params()
+    for z,r,ph,_ in p['clamp_config']:
+        clamp=cable_clamp(z,r,0)
+        assert clamp.is_watertight and clamp.volume>0
+    # Terminal posts are watertight
+    tp=terminal_post([0,0,0],p['terminal_post_radius'],p['terminal_post_height'])
+    assert tp.is_watertight and tp.volume>0
+    # Fixing report documents every wire segment
+    fr=fixing_report()
+    assert len(fr['assembly_sequence'])>=8
+    assert len(fr['tool_access'])>=3
+    assert '待确认' in fr['status']
+
+
+def test_bracket_mounts_on_extended_tie_rods_and_passes_audit():
+    from organic_motor.construct.wound_prototype import build, WoundSpec
+    from organic_motor.construct.assembly_audit import audit
+    assets,report,route=build(WoundSpec())
+    # Tie rods are 130 mm (extended for bracket)
+    tr=assets['tie_rod']
+    assert abs(tr.extents[2]-130)<0.1
+    # Bracket is in the assembly
+    assert any(i['asset']=='harness_bracket_base' for i in report['instances'])
+    # Terminals are in the assembly
+    assert any(i['asset']=='terminal_U' for i in report['instances'])
+    assert any(i['asset']=='terminal_N' for i in report['instances'])
+    # Clamps are in the assembly
+    assert sum(1 for i in report['instances'] if i['asset'].startswith('clamp_'))==9
+    # Terminal contacts are defined by geometry AND netlist
+    contacts=report['winding_harness']['terminal_contacts']
+    assert len(contacts)==4  # U,V,W,N
+    for c in contacts:
+        assert 'position_mm' in c and 'phase' in c and 'contact_radius_mm' in c
+    # Audit passes
+    result=audit(assets,report)
+    assert result['static_interference_pass']
+    assert len(result['intended_electrical_contacts'])>=9  # 3 N-node + 3 terminal + 3 clamp
